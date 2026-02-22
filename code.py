@@ -9,13 +9,48 @@ import streamlit.components.v1 as components
 
 # This function creates the "Bridge"
 def hrv_sensor_component():
-    components.html(
+    return components.html(
         """
-        <div style="background: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #d1d5db; font-family: sans-serif; height: 280px; overflow: hidden;">
-            <p id="status-text" style="font-family: sans-serif;">📊 <b>Hardware:</b> Ready</p>
-            <canvas id="waveCanvas" width="300" height="60" style="background: #000; border-radius: 5px; margin-bottom: 10px;"></canvas>
+        <style>
+            .container {
+                background: #f0f2f6; 
+                padding: 15px; 
+                border-radius: 15px; 
+                text-align: center; 
+                border: 1px solid #d1d5db; 
+                font-family: sans-serif;
+                max-width: 100%;
+                box-sizing: border-box;
+            }
+            #waveCanvas {
+                background: #000; 
+                border-radius: 8px; 
+                margin: 10px 0; 
+                width: 100%; /* This makes it fit any screen */
+                height: 120px;
+                display: block;
+            }
+            #camera-btn {
+                padding: 14px; 
+                background: #ff4b4b; 
+                color: white; 
+                border: none; 
+                border-radius: 10px; 
+                cursor: pointer; 
+                font-weight: bold; 
+                width: 100%; 
+                font-size: 16px;
+            }
+        </style>
+
+        <div class="container">
+            <p id="status-text" style="margin: 5px 0;">📊 <b>Hardware:</b> Ready</p>
+            
+            <canvas id="waveCanvas"></canvas>
+            
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()" style="padding: 10px 20px; background: #ff4b4b; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;">
+            
+            <button id="camera-btn" onclick="initSensor()">
                 Enable Camera & Flash
             </button>
         </div>
@@ -24,21 +59,25 @@ def hrv_sensor_component():
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
-        let points = new Array(100).fill(30); // Pre-fill wave points
+        
+        // We need to set the internal resolution to match the display size
+        canvas.width = canvas.offsetWidth;
+        canvas.height = 120;
+        
+        let points = new Array(100).fill(60); 
 
         function drawWave(value) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
-            ctxWave.strokeStyle = '#00ff00'; // Medical Green
-            ctxWave.lineWidth = 2;
+            ctxWave.strokeStyle = '#00ff00';
+            ctxWave.lineWidth = 3;
             ctxWave.beginPath();
             
-            // Normalize value for display (0-255 scale to 0-60 height)
-            let y = 60 - ((value - 100) * 1.5); 
+            let y = 60 - ((value - 128) * 1.5); 
             points.push(y);
             points.shift();
 
             for (let i = 0; i < points.length; i++) {
-                let x = i * (300 / 100);
+                let x = i * (canvas.width / 100);
                 if (i === 0) ctxWave.moveTo(x, points[i]);
                 else ctxWave.lineTo(x, points[i]);
             }
@@ -53,7 +92,7 @@ def hrv_sensor_component():
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: 320 },
+                    video: { facingMode: "environment", width: { ideal: 320 } },
                     audio: false
                 });
                 video.srcObject = stream;
@@ -104,7 +143,7 @@ def hrv_sensor_component():
         }
         </script>
         """,
-        height=300,
+        height=350,
     )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -259,5 +298,6 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
