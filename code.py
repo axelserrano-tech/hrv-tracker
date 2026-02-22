@@ -60,7 +60,7 @@ def hrv_sensor_component():
             </button>
         </div>
 
-     <script>
+   <script>
 let scanning = false;
 
 const canvas = document.getElementById('waveCanvas');
@@ -71,7 +71,9 @@ canvas.height = 80;
 
 let signalBuffer = [];
 let timeBuffer = [];
-const MAX_SAMPLES = 300;
+const MAX_SAMPLES = 400;
+
+/* ---------- SIGNAL ACQUISITION ---------- */
 
 function robustGreenAverage(pixels) {
     let greens = [];
@@ -96,30 +98,37 @@ function pushSignal(value) {
     }
 }
 
+/* ---------- PREPROCESSING ---------- */
+
 function detrend(signal) {
     const mean = signal.reduce((a,b)=>a+b,0) / signal.length;
     return signal.map(v => v - mean);
 }
 
-function simpleFilter(signal) {
-    let filtered = [];
+// Lightweight band-pass style filter
+function bandpass(signal) {
+    let out = [];
     let prev = 0;
 
-    for (let i = 0; i < signal.length; i++) {
-        let hp = signal[i] - (signal[i-1] || signal[i]);
-        let smoothed = prev + 0.15 * (hp - prev);
-        filtered.push(smoothed);
-        prev = smoothed;
+    for (let i = 1; i < signal.length; i++) {
+        let hp = signal[i] - signal[i-1];     
+        let lp = prev + 0.2 * (hp - prev);    
+        out.push(lp);
+        prev = lp;
     }
-    return filtered;
+    return out;
 }
+
+/* ---------- PEAK DETECTION ---------- */
 
 function detectPeaks(signal, times) {
     let peaks = [];
     if (signal.length < 10) return peaks;
 
     const mean = signal.reduce((a,b)=>a+b,0) / signal.length;
-    const std = Math.sqrt(signal.map(x => (x-mean)**2).reduce((a,b)=>a+b,0) / signal.length);
+    const std = Math.sqrt(signal.map(x => (x-mean)**2)
+                        .reduce((a,b)=>a+b,0) / signal.length);
+
     const threshold = mean + 0.8 * std;
 
     for (let i = 1; i < signal.length - 1; i++) {
@@ -141,6 +150,44 @@ function computeIBI(peaks) {
     return ibi;
 }
 
+/* ---------- PHYSIOLOGICAL VALIDATION ---------- */
+
+function validateIBI(ibi) {
+    let clean = [];
+
+    for (let i = 0; i < ibi.length; i++) {
+
+        if (ibi[i] < 0.33 || ibi[i] > 1.5) continue;
+
+        if (i > 0) {
+            const ratio = ibi[i] / ibi[i-1];
+            if (ratio > 1.25 || ratio < 0.75) continue;
+        }
+
+        clean.push(ibi[i]);
+    }
+    return clean;
+}
+
+/* ---------- ARTIFACT CORRECTION ---------- */
+
+function correctArtifacts(ibi) {
+    if (ibi.length < 5) return ibi;
+
+    let corrected = [...ibi];
+
+    for (let i = 1; i < ibi.length - 1; i++) {
+        const localMean = (ibi[i-1] + ibi[i+1]) / 2;
+
+        if (Math.abs(ibi[i] - localMean) / localMean > 0.2) {
+            corrected[i] = localMean;
+        }
+    }
+    return corrected;
+}
+
+/* ---------- HRV METRICS ---------- */
+
 function computeHR(ibi) {
     if (!ibi.length) return 0;
     const sorted = [...ibi].sort((a,b)=>a-b);
@@ -148,29 +195,51 @@ function computeHR(ibi) {
     return 60 / median;
 }
 
-function variabilityIndex(ibi) {
-    if (ibi.length < 2) return 0;
+function computeRMSSD(ibi) {
+    if (ibi.length < 5) return 0;
 
     let diffs = [];
+
     for (let i = 1; i < ibi.length; i++)
-        diffs.push((ibi[i] - ibi[i-1]) ** 2);
+        diffs.push(ibi[i] - ibi[i-1]);
 
-    return Math.sqrt(diffs.reduce((a,b)=>a+b,0) / diffs.length);
+    const meanSq = diffs.map(d => d*d)
+                        .reduce((a,b)=>a+b,0) / diffs.length;
+
+    return Math.sqrt(meanSq) * 1000; // sec → ms
 }
 
-function signalQuality(filtered, ibi) {
-    if (ibi.length < 5) return "insufficient";
+/* ---------- STATIONARITY ---------- */
 
-    const meanIBI = ibi.reduce((a,b)=>a+b,0) / ibi.length;
+function checkStationarity(ibi) {
+    if (ibi.length < 10) return false;
 
-    if (meanIBI < 0.33 || meanIBI > 1.5)
-        return "invalid_hr_range";
+    const half = Math.floor(ibi.length / 2);
 
-    const variability = computeRMSSD(ibi);
+    const mean1 = ibi.slice(0, half).reduce((a,b)=>a+b,0) / half;
+    const mean2 = ibi.slice(half).reduce((a,b)=>a+b,0) / (ibi.length - half);
 
-    if (variability < 5) return "low_variability_or_noise";
-    return "good";
+    return Math.abs(mean1 - mean2) / mean1 < 0.1;
 }
+
+/* ---------- SIGNAL QUALITY INDEX ---------- */
+
+function computeSQI(filtered, ibi) {
+    if (ibi.length < 5) return 0;
+
+    const amp = Math.max(...filtered) - Math.min(...filtered);
+    const rmssd = computeRMSSD(ibi);
+
+    let score = 100;
+
+    if (amp < 1.0) score -= 40;
+    if (rmssd < 10) score -= 30;
+    if (!checkStationarity(ibi)) score -= 30;
+
+    return Math.max(0, score);
+}
+
+/* ---------- VISUALIZATION ---------- */
 
 function drawWave(value) {
     ctxWave.clearRect(0,0,canvas.width,canvas.height);
@@ -195,6 +264,8 @@ function drawWave(value) {
     ctxWave.stroke();
 }
 
+/* ---------- SENSOR ---------- */
+
 async function initSensor() {
     if (scanning) return;
 
@@ -203,6 +274,9 @@ async function initSensor() {
     const btn = document.getElementById('camera-btn');
 
     try {
+        signalBuffer = [];
+        timeBuffer = [];
+
         const stream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: "environment" },
             audio: false
@@ -237,7 +311,7 @@ async function initSensor() {
             const avgGreen = robustGreenAverage(pixels);
             pushSignal(avgGreen);
 
-            const filtered = simpleFilter(detrend(signalBuffer));
+            const filtered = bandpass(detrend(signalBuffer));
             drawWave(filtered[filtered.length - 1] || 0);
 
             if (elapsed < duration) {
@@ -247,20 +321,27 @@ async function initSensor() {
                 scanning = false;
                 track.stop();
 
-                const filteredFinal = simpleFilter(detrend(signalBuffer));
+                const filteredFinal = bandpass(detrend(signalBuffer));
                 const peaks = detectPeaks(filteredFinal, timeBuffer);
-                const ibi = computeIBI(peaks);
+
+                let ibi = computeIBI(peaks);
+                ibi = validateIBI(ibi);
+                ibi = correctArtifacts(ibi);
 
                 const hr = computeHR(ibi);
-                const pvi = variabilityIndex(ibi);
-                const quality = signalQuality(filteredFinal, ibi);
+                const rmssd = computeRMSSD(ibi);
+                const sqi = computeSQI(filteredFinal, ibi);
+
+                let quality = "rejected";
+                if (sqi > 70) quality = "good";
+                else if (sqi > 40) quality = "usable";
 
                 statusText.innerHTML =
-                    `✅ HR: ${hr.toFixed(0)} | PVI: ${pvi.toFixed(2)} (${quality})`;
+                    `✅ HR: ${hr.toFixed(0)} | RMSSD: ${rmssd.toFixed(1)} ms | SQI: ${sqi} (${quality})`;
 
                 window.parent.postMessage({
                     type: 'streamlit:setComponentValue',
-                    value: { hr: Math.round(hr), hrv: pvi, quality: quality }
+                    value: { hr: Math.round(hr), hrv: rmssd, sqi: sqi, quality: quality }
                 }, '*');
             }
         }
@@ -428,6 +509,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
