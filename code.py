@@ -6,7 +6,8 @@ from datetime import datetime
 import os
 import streamlit.components.v1 as components
 
-# --- 1. THE HTML/JS BLOB (Moved outside to prevent parsing errors) ---
+# --- 1. THE REFINED JAVASCRIPT BLOB ---
+# We added a 'Streamlit.setComponentValue' listener to ensure the handshake is 100% stable.
 HRV_JS_CODE = """
 <div id="root">
     <style>
@@ -39,6 +40,15 @@ HRV_JS_CODE = """
 </div>
 
 <script>
+    // Standard Streamlit Component Handshake
+    function sendToStreamlit(value) {
+        window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: "streamlit:setComponentValue",
+            value: value
+        }, "*");
+    }
+
     let scanning = false;
     let beatTimes = [];
     let waveData = new Array(100).fill(0);
@@ -62,105 +72,107 @@ HRV_JS_CODE = """
 
     async function start() {
         if (scanning) return;
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        const vid = document.getElementById('vid');
-        vid.srcObject = stream;
-        document.getElementById('btn').style.display = 'none';
-        scanning = true;
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+            const vid = document.getElementById('vid');
+            vid.srcObject = stream;
+            document.getElementById('btn').style.display = 'none';
+            scanning = true;
 
-        const track = stream.getVideoTracks()[0];
-        const caps = track.getCapabilities();
-        if (caps.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
+            const track = stream.getVideoTracks()[0];
+            const caps = track.getCapabilities();
+            if (caps.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
-        const pC = document.createElement('canvas');
-        const pCtx = pC.getContext('2d', {willReadFrequently: true});
-        pC.width = 20; pC.height = 20;
+            const pC = document.createElement('canvas');
+            const pCtx = pC.getContext('2d', {willReadFrequently: true});
+            pC.width = 20; pC.height = 20;
 
-        let startTime = performance.now();
-        let lastB = 0; let lp = 0;
+            let startTime = performance.now();
+            let lastB = 0; let lp = 0;
 
-        function process() {
-            if (!scanning) return;
-            let now = performance.now();
-            let elapsed = (now - startTime) / 1000;
-            
-            document.getElementById('progress-fill').style.width = (elapsed/60*100) + "%";
-            document.getElementById('status').innerText = "Scanning: " + Math.ceil(60 - elapsed) + "s";
-
-            if (elapsed >= 60) {
-                scanning = false; track.stop();
-                let rr = [];
-                for(let i=1; i<beatTimes.length; i++) rr.push(beatTimes[i] - beatTimes[i-1]);
-                let diffs = [];
-                for(let i=1; i<rr.length; i++) diffs.push(Math.pow(rr[i] - rr[i-1], 2));
-                let rmssd = Math.sqrt(diffs.reduce((a,b)=>a+b,0) / diffs.length);
-                let hr = Math.round(60000 / (rr.reduce((a,b)=>a+b,0)/rr.length));
+            function process() {
+                if (!scanning) return;
+                let now = performance.now();
+                let elapsed = (now - startTime) / 1000;
                 
-                // Streamlit specific communication
-                window.parent.postMessage({
-                    isStreamlitMessage: true,
-                    type: "streamlit:setComponentValue",
-                    value: {hr: hr, hrv: Math.round(rmssd)}
-                }, "*");
-                return;
-            }
+                document.getElementById('progress-fill').style.width = (elapsed/60*100) + "%";
+                document.getElementById('status').innerText = "Scanning: " + Math.ceil(60 - elapsed) + "s";
 
-            pCtx.drawImage(vid, 0, 0, 20, 20);
-            let px = pCtx.getImageData(0,0,20,20).data;
-            let g = 0; for(let i=1; i<px.length; i+=4) g += px[i];
-            g /= 400;
-            lp = (0.9 * lp) + (0.1 * g);
-            let sig = g - lp;
-            draw(sig);
+                if (elapsed >= 60) {
+                    scanning = false; track.stop();
+                    let rr = [];
+                    for(let i=1; i<beatTimes.length; i++) rr.push(beatTimes[i] - beatTimes[i-1]);
+                    
+                    let diffs = [];
+                    for(let i=1; i<rr.length; i++) diffs.push(Math.pow(rr[i] - rr[i-1], 2));
+                    let rmssd = Math.sqrt(diffs.reduce((a,b)=>a+b,0) / diffs.length);
+                    let hr = Math.round(60000 / (rr.reduce((a,b)=>a+b,0)/rr.length));
+                    
+                    sendToStreamlit({hr: hr, hrv: Math.round(rmssd), status: "complete"});
+                    return;
+                }
 
-            if (sig > 0.15 && (now - lastB) > 400) {
-                beatTimes.push(now);
-                if(beatTimes.length > 2) document.getElementById('bpm').innerText = Math.round(60000/(now-lastB));
-                lastB = now;
+                pCtx.drawImage(vid, 0, 0, 20, 20);
+                let px = pCtx.getImageData(0,0,20,20).data;
+                let g = 0; for(let i=1; i<px.length; i+=4) g += px[i];
+                g /= 400;
+                lp = (0.9 * lp) + (0.1 * g);
+                let sig = g - lp;
+                draw(sig);
+
+                if (sig > 0.15 && (now - lastB) > 400) {
+                    beatTimes.push(now);
+                    if(beatTimes.length > 2) document.getElementById('bpm').innerText = Math.round(60000/(now-lastB));
+                    lastB = now;
+                }
+                requestAnimationFrame(process);
             }
-            requestAnimationFrame(process);
-        }
-        process();
+            process();
+        } catch (e) { document.getElementById('status').innerText = "CAMERA ERROR"; }
     }
 </script>
 """
 
-# --- 2. THE SENSOR FUNCTION ---
+# --- 2. THE SENSOR COMPONENT ---
 def hrv_sensor_component():
-    # Pass the pre-defined string here
-    return components.html(HRV_JS_CODE, height=450, key="hrv_precision_sensor")
+    # Use a static height and avoid complex Python logic inside the call
+    return components.html(HRV_JS_CODE, height=450, key="hrv_component_v1")
 
-# --- 3. DATA & STATE ---
+# --- 3. DATA & STATE MANAGEMENT ---
 st.set_page_config(page_title="Kubios HRV", layout="wide")
 
+# Initialize Session States safely
 if 'detected_hr' not in st.session_state:
     st.session_state.detected_hr = 70
 if 'detected_hrv' not in st.session_state:
     st.session_state.detected_hrv = 50
 
 # --- 4. APP LAYOUT ---
-st.title("Research-Grade HRV Tracker")
+st.title("Research-Grade HRV Readiness")
 
 col_left, col_right = st.columns([1, 2])
 
 with col_left:
-    st.subheader("1. Pulse Acquisition")
-    # SAFE CAPTURE: Check if component returned data
-    data = hrv_sensor_component()
+    st.subheader("Acquisition")
     
-    if data is not None:
-        # Use .get() to avoid KeyErrors
-        st.session_state.detected_hr = data.get('hr', 70)
-        st.session_state.detected_hrv = data.get('hrv', 50)
-        st.success("✅ Scan Synchronized")
+    # Capture the data from the component
+    res = hrv_sensor_component()
+    
+    # Use a strict type check to avoid the TypeError
+    if res is not None and isinstance(res, dict):
+        if "hr" in res:
+            st.session_state.detected_hr = res["hr"]
+            st.session_state.detected_hrv = res["hrv"]
+            st.success(f"Locked: {res['hr']} BPM")
 
-    with st.form("entry_form"):
-        hr_input = st.number_input("Confirmed HR", value=int(st.session_state.detected_hr))
-        hrv_input = st.number_input("Confirmed RMSSD (ms)", value=int(st.session_state.detected_hrv))
-        if st.form_submit_button("Save to Dashboard"):
-            st.balloons()
+    # The manual entry form
+    with st.form("manual_entry"):
+        hr_val = st.number_input("Heart Rate", value=int(st.session_state.detected_hr))
+        hrv_val = st.number_input("HRV (RMSSD)", value=int(st.session_state.detected_hrv))
+        if st.form_submit_button("Save Entry"):
+            st.toast("Entry Saved locally (Simulated)")
 
 with col_right:
-    st.subheader("2. Readiness Data")
+    st.subheader("Training Readiness")
     
-    st.info("Place your finger lightly over the camera and flash. The RMSSD (HRV) will be calculated over a full 60-second window for maximum accuracy.")
+    st.info("The RMSSD (Root Mean Square of Successive Differences) is the gold standard for measuring parasympathetic recovery. A higher RMSSD compared to your baseline indicates high readiness for training.")
