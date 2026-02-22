@@ -110,9 +110,17 @@ def hrv_sensor_component():
                 const startTime = Date.now();
                 const duration = 60000;
 
+                let readings = [];
+                let beatTimes = []; // To store timestamps of each heartbeat
+                let lastValue = 0;
+                let isPeak = false;
+                const startTime = Date.now();
+                const duration = 60000;
+
                 function process() {
                     if (!scanning) return;
-                    const elapsed = Date.now() - startTime;
+                    const now = Date.now();
+                    const elapsed = now - startTime;
                     const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
 
                     procCtx.drawImage(video, 0, 0, 32, 32);
@@ -123,24 +131,50 @@ def hrv_sensor_component():
 
                     drawWave(avgGreen);
 
+                    // --- REAL-TIME PEAK DETECTION ---
+                    // We look for when the green intensity drops (blood volume increases)
+                    if (lastValue > 0 && avgGreen < lastValue && !isPeak && avgGreen < 130) {
+                        beatTimes.push(now);
+                        isPeak = true; // Lock until the wave goes back up
+                    } else if (avgGreen > lastValue + 1) {
+                        isPeak = false; // Reset lock
+                    }
+                    lastValue = avgGreen;
+
                     if (elapsed < duration) {
-                        statusText.innerHTML = `💓 <b>Reading Pulse:</b> ${remaining}s remaining...`;
+                        // Show real-time feedback of how many beats we've counted
+                        let currentBPM = beatTimes.length > 5 ? 
+                            Math.round((beatTimes.length / (elapsed / 60000))) : "--";
+                        
+                        statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
                         requestAnimationFrame(process);
                     } else {
+                        // --- FINAL CALCULATIONS ---
                         scanning = false;
                         track.stop();
+
+                        // Calculate RMSSD from the beatTimes array
+                        let rrIntervals = [];
+                        for(let i = 1; i < beatTimes.length; i++) {
+                            rrIntervals.push(beatTimes[i] - beatTimes[i-1]);
+                        }
+
+                        // Simple RMSSD Math: Root Mean Square of Successive Differences
+                        let diffs = [];
+                        for(let i = 1; i < rrIntervals.length; i++) {
+                            diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2));
+                        }
+                        let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 50;
+                        let finalHR = Math.round((beatTimes.length / (duration / 60000)));
+
                         statusText.innerHTML = "✅ <b>Scan Complete!</b>";
+                        
                         window.parent.postMessage({
                             type: 'streamlit:setComponentValue',
-                            value: { hr: 72, hrv: 58, status: 'done' }
+                            value: { hr: finalHR, hrv: Math.round(calculatedRMSSD), status: 'done' }
                         }, '*');
                     }
                 }
-                video.onplay = () => process();
-            } catch (err) {
-                statusText.innerHTML = "❌ Error: " + err.message;
-            }
-        }
         </script>
         """,
         height=350,
@@ -298,6 +332,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
