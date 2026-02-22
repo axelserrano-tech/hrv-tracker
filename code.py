@@ -406,23 +406,7 @@ with st.sidebar:
         # --- FEATURE PREVIEW: PPG FLASH SCAN ---
         st.info("💡 **PPG Flash Scan (Mock):** Based on research, place your finger over the camera and flash for a 60-second scan.")
         
-        if st.button("🚀 Start Pulse Scan"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            chart_placeholder = st.empty()
-            
-            # Simulated 60s acquisition window (compressed for demo)
-            for i in range(100):
-                progress_bar.progress(i + 1)
-                # Create a mock PPG wave visualization based on green channel processing
-                mock_wave = np.sin(np.linspace(0, 5, 50) + i/5) + np.random.normal(0, 0.05, 50)
-                chart_placeholder.line_chart(mock_wave)
-                status_text.text(f"Acquiring PPG Signal... {i}%")
-                time.sleep(0.04)
-            
-            # Simulate rMSSD calculation from beat-to-beat accuracy models
-            st.session_state['detected_hr'] = np.random.randint(60, 85)
-            st.session_state['detected_hrv'] = np.random.randint(45, 75)
+       
             st.success("✅ Scan Complete! Validating RMSSD signal...")
 
         st.divider()
@@ -509,6 +493,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
