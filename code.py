@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 import os
+import time
 
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -51,12 +52,39 @@ with st.sidebar:
     
     if st.session_state.role == "student":
         st.header("🕒 Daily Measurement")
+        
+        # --- FEATURE PREVIEW: PPG FLASH SCAN ---
+        st.info("💡 **PPG Flash Scan (Mock):** Based on research, place your finger over the camera and flash for a 60-second scan.")
+        
+        if st.button("🚀 Start Pulse Scan"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            chart_placeholder = st.empty()
+            
+            # Simulated 60s acquisition window (compressed for demo)
+            for i in range(100):
+                progress_bar.progress(i + 1)
+                # Create a mock PPG wave visualization based on green channel processing
+                mock_wave = np.sin(np.linspace(0, 5, 50) + i/5) + np.random.normal(0, 0.05, 50)
+                chart_placeholder.line_chart(mock_wave)
+                status_text.text(f"Acquiring PPG Signal... {i}%")
+                time.sleep(0.04)
+            
+            # Simulate rMSSD calculation from beat-to-beat accuracy models
+            st.session_state['detected_hr'] = np.random.randint(60, 85)
+            st.session_state['detected_hrv'] = np.random.randint(45, 75)
+            st.success("✅ Scan Complete! Validating RMSSD signal...")
+
+        st.divider()
+
+        # --- DATA ENTRY FORM ---
         with st.form("entry", clear_on_submit=True):
-            hr = st.number_input("Heart Rate (BPM)", 40, 160, 70)
-            hrv = st.number_input("HRV (RMSSD ms)", 5, 250, 50)
+            # Form defaults to "detected" values from the scan above
+            hr = st.number_input("Heart Rate (BPM)", 40, 160, st.session_state.get('detected_hr', 70))
+            hrv = st.number_input("HRV (RMSSD ms)", 5, 250, st.session_state.get('detected_hrv', 50))
             
             st.write("---")
-            st.write("🧘 **Anatomical Soreness Map**")
+            st.write("🧘 **Anatomical Soreness Map** (The 'Dessert')")
             c1, c2 = st.columns(2)
             with c1:
                 s1, s2, s3 = st.checkbox("Upper Back"), st.checkbox("Shoulders"), st.checkbox("Chest")
@@ -78,16 +106,17 @@ with st.sidebar:
                 st.success("Measurement Recorded!")
                 st.rerun()
 
-# --- DASHBOARD ---
+# --- DASHBOARD LOGIC ---
 if st.session_state.role == "student":
     u_df = df[df['User_ID'] == st.session_state.user].copy()
     if not u_df.empty:
+        # Scientific Baseline Logic (RMSSD focus as requested)
         baseline = u_df['RMSSD'].mean()
         std_v = u_df['RMSSD'].std() if len(u_df) > 1 else 10
         latest = u_df['RMSSD'].iloc[-1]
         z = (latest - baseline) / std_v if std_v != 0 else 0
         
-        # Advice Logic
+        # Readiness Advice Logic
         if z > -0.5: st.success("🟢 **READY:** Optimal recovery. Baseline stable.")
         elif z > -1.5: st.warning("🟡 **CAUTION:** Moderate deviation. Consider active recovery.")
         else: st.error("🔴 **REST:** Large deviation detected. Significant cardiovascular strain.")
@@ -108,14 +137,16 @@ if st.session_state.role == "student":
             st.subheader("Trends & Team Context")
             plot_df = u_df.tail(10).copy()
             plot_df['Personal_Baseline'] = baseline
-            plot_df['Team_Avg'] = df['RMSSD'].mean() # New context line
+            plot_df['Team_Avg'] = df['RMSSD'].mean()
             st.line_chart(plot_df.set_index('Timestamp')[['RMSSD', 'Personal_Baseline', 'Team_Avg']])
         
         st.divider()
         st.subheader("📋 Your Recent History")
         st.table(u_df[['Timestamp', 'HR', 'RMSSD', 'Soreness', 'Location']].tail(5))
-    else: st.info("Welcome! Please submit your first reading to see your baseline.")
+    else: 
+        st.info("Welcome! Please perform a scan or enter your first reading to see your baseline.")
 
+# --- ADMIN PANEL ---
 elif st.session_state.role == "admin":
     st.title("👑 Coach Administration Panel")
     if not df.empty:
