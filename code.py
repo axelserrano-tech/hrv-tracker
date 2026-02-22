@@ -7,8 +7,7 @@ import os
 import time
 import streamlit.components.v1 as components
 
-# This function creates the "Bridge"
-# This function creates the "Bridge" - UPDATED FOR FIX
+# --- 1. THE STABILIZED SENSOR COMPONENT ---
 def hrv_sensor_component():
     components.html(
         """
@@ -16,43 +15,37 @@ def hrv_sensor_component():
             .container {
                 background: #f0f2f6; 
                 padding: 15px; 
-                border-radius: 10px; 
+                border-radius: 12px; 
                 text-align: center; 
                 border: 1px solid #d1d5db;
                 font-family: sans-serif;
-                /* Fix: Ensure container manages its children's width */
                 width: 100%;
                 box-sizing: border-box;
                 overflow: hidden;
             }
             #waveCanvas {
                 background: #000; 
-                border-radius: 5px; 
-                margin-bottom: 10px;
-                /* Fix: Make canvas responsive to sidebar width */
-                width: 100%;
-                height: 80px;
+                border-radius: 8px; 
+                margin: 10px 0;
+                width: 100%; /* Responsive width */
+                height: 100px;
                 display: block;
             }
             #camera-btn {
-                padding: 12px; 
+                padding: 14px; 
                 background: #ff4b4b; 
                 color: white; 
                 border: none; 
-                border-radius: 5px; 
+                border-radius: 10px; 
                 cursor: pointer; 
                 font-weight: bold; 
                 width: 100%;
-                font-size: 14px;
-            }
-            #status-text {
-                font-size: 14px;
-                margin-bottom: 10px;
+                font-size: 16px;
             }
         </style>
 
         <div class="container">
-            <p id="status-text">📊 <b>Hardware:</b> Ready</p>
+            <p id="status-text" style="margin:0 0 10px 0;">📊 <b>Hardware:</b> Ready</p>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
             <button id="camera-btn" onclick="initSensor()">
@@ -65,20 +58,20 @@ def hrv_sensor_component():
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
         
-        // Fix: Set internal canvas resolution to match its displayed size
+        // Match internal resolution to the element's visual width
         canvas.width = canvas.offsetWidth;
-        canvas.height = 80;
+        canvas.height = 100;
         
-        let points = new Array(100).fill(40); 
+        let points = new Array(100).fill(50); 
 
         function drawWave(value) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
             ctxWave.strokeStyle = '#00ff00';
-            ctxWave.lineWidth = 2;
+            ctxWave.lineWidth = 3;
             ctxWave.beginPath();
             
-            // Normalize for 80px height
-            let y = 40 - ((value - 128) * 1.2); 
+            // Normalize pulse signal to fit canvas height
+            let y = 50 - ((value - 128) * 1.5); 
             points.push(y);
             points.shift();
 
@@ -98,7 +91,7 @@ def hrv_sensor_component():
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 320 } },
+                    video: { facingMode: "environment" },
                     audio: false
                 });
                 video.srcObject = stream;
@@ -106,8 +99,8 @@ def hrv_sensor_component():
                 scanning = true;
 
                 const track = stream.getVideoTracks()[0];
-                const capabilities = track.getCapabilities();
-                if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
+                const caps = track.getCapabilities();
+                if (caps.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
                 const procCanvas = document.createElement('canvas');
                 const procCtx = procCanvas.getContext('2d', { alpha: false });
@@ -130,7 +123,7 @@ def hrv_sensor_component():
                     drawWave(avgGreen);
 
                     if (elapsed < duration) {
-                        statusText.innerHTML = `💓 <b>Reading Pulse:</b> ${remaining}s remaining...`;
+                        statusText.innerHTML = `💓 <b>Scanning:</b> ${remaining}s left`;
                         requestAnimationFrame(process);
                     } else {
                         scanning = false;
@@ -142,21 +135,28 @@ def hrv_sensor_component():
                         }, '*');
                     }
                 }
-                video.onplay = () => process();
+                process();
             } catch (err) {
-                statusText.innerHTML = "❌ Error: Camera Access Required";
+                statusText.innerHTML = "❌ Camera Error: Check Permissions";
             }
         }
         </script>
         """,
-        height=220,
+        height=240,
+        key="hrv_sensor_fixed"
     )
-# --- INITIAL SETUP ---
+
+# --- 2. INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
 
-# --- DATA ENGINE ---
-DB_FILE = "student_health_data.csv"
+# Ensure session state exists for the form
+if 'detected_hr' not in st.session_state:
+    st.session_state['detected_hr'] = 70
+if 'detected_hrv' not in st.session_state:
+    st.session_state['detected_hrv'] = 50
 
+# --- 3. DATA ENGINE ---
+DB_FILE = "student_health_data.csv"
 def load_data():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
@@ -164,7 +164,7 @@ def load_data():
         return df
     return pd.DataFrame(columns=['User_ID', 'Timestamp', 'HR', 'RMSSD', 'Soreness', 'Location', 'Weight', 'Sex'])
 
-# --- LOGIN SYSTEM ---
+# --- 4. LOGIN SYSTEM ---
 if 'auth' not in st.session_state:
     st.session_state.auth = False
     st.session_state.user = None
@@ -185,7 +185,7 @@ if not st.session_state.auth:
             else: st.error("Access Denied.")
     st.stop()
 
-# --- MAIN APP ---
+# --- 5. MAIN APP ---
 df = load_data()
 
 with st.sidebar:
@@ -197,111 +197,37 @@ with st.sidebar:
     
     if st.session_state.role == "student":
         st.header("🕒 Daily Measurement")
+        # Call the fixed component
         hrv_sensor_component()
-        # --- FEATURE PREVIEW: PPG FLASH SCAN ---
-        st.info("💡 **PPG Flash Scan (Mock):** Based on research, place your finger over the camera and flash for a 60-second scan.")
-        
-        if st.button("🚀 Start Pulse Scan"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            chart_placeholder = st.empty()
-            
-            # Simulated 60s acquisition window (compressed for demo)
-            for i in range(100):
-                progress_bar.progress(i + 1)
-                # Create a mock PPG wave visualization based on green channel processing
-                mock_wave = np.sin(np.linspace(0, 5, 50) + i/5) + np.random.normal(0, 0.05, 50)
-                chart_placeholder.line_chart(mock_wave)
-                status_text.text(f"Acquiring PPG Signal... {i}%")
-                time.sleep(0.04)
-            
-            # Simulate rMSSD calculation from beat-to-beat accuracy models
-            st.session_state['detected_hr'] = np.random.randint(60, 85)
-            st.session_state['detected_hrv'] = np.random.randint(45, 75)
-            st.success("✅ Scan Complete! Validating RMSSD signal...")
 
-        st.divider()
-
-        # --- DATA ENTRY FORM ---
+# --- 6. DASHBOARD ---
+if st.session_state.role == "student":
+    st.subheader("Analysis & Trends")
+    
+    
+    u_df = df[df['User_ID'] == st.session_state.user].copy()
+    
+    col_form, col_chart = st.columns([1, 2])
+    
+    with col_form:
         with st.form("entry", clear_on_submit=True):
-            # Form defaults to "detected" values from the scan above
-            hr = st.number_input("Heart Rate (BPM)", 40, 160, st.session_state.get('detected_hr', 70))
-            hrv = st.number_input("HRV (RMSSD ms)", 5, 250, st.session_state.get('detected_hrv', 50))
+            hr = st.number_input("Heart Rate (BPM)", 40, 160, st.session_state.detected_hr)
+            hrv = st.number_input("HRV (RMSSD ms)", 5, 250, st.session_state.detected_hrv)
+            s_val = st.select_slider("Muscle Soreness (1-10)", range(1, 11), 1)
             
-            st.write("---")
-            st.write("🧘 **Anatomical Soreness Map** (The 'Dessert')")
-            c1, c2 = st.columns(2)
-            with c1:
-                s1, s2, s3 = st.checkbox("Upper Back"), st.checkbox("Shoulders"), st.checkbox("Chest")
-            with c2:
-                s4, s5, s6 = st.checkbox("Quads"), st.checkbox("Hamstrings"), st.checkbox("Calves")
-            
-            s_val = st.select_slider("Intensity (1-10)", list(range(1, 11)), 1)
-            
-            with st.expander("Bio-Factors (Optional)"):
-                weight = st.number_input("Weight (kg)", 30, 200, 70)
-                sex = st.selectbox("Sex", ["Male", "Female", "Other"])
-
             if st.form_submit_button("Submit & Sync"):
-                locs = [l for l, v in zip(["Upper Back", "Shoulders", "Chest", "Quads", "Hamstrings", "Calves"], [s1, s2, s3, s4, s5, s6]) if v]
-                new = pd.DataFrame({'User_ID': [st.session_state.user], 'Timestamp': [datetime.now()], 'HR': [hr], 'RMSSD': [hrv], 
-                                    'Soreness': [s_val], 'Location': [", ".join(locs) if locs else "None"], 'Weight': [weight], 'Sex': [sex]})
-                df = pd.concat([df, new], ignore_index=True)
+                new_entry = pd.DataFrame({
+                    'User_ID': [st.session_state.user], 'Timestamp': [datetime.now()],
+                    'HR': [hr], 'RMSSD': [hrv], 'Soreness': [s_val], 
+                    'Location': ["None"], 'Weight': [70], 'Sex': ["Other"]
+                })
+                df = pd.concat([df, new_entry], ignore_index=True)
                 df.to_csv(DB_FILE, index=False)
                 st.success("Measurement Recorded!")
                 st.rerun()
 
-# --- DASHBOARD LOGIC ---
-if st.session_state.role == "student":
-    u_df = df[df['User_ID'] == st.session_state.user].copy()
-    if not u_df.empty:
-        # Scientific Baseline Logic (RMSSD focus as requested)
-        baseline = u_df['RMSSD'].mean()
-        std_v = u_df['RMSSD'].std() if len(u_df) > 1 else 10
-        latest = u_df['RMSSD'].iloc[-1]
-        z = (latest - baseline) / std_v if std_v != 0 else 0
-        
-        # Readiness Advice Logic
-        if z > -0.5: st.success("🟢 **READY:** Optimal recovery. Baseline stable.")
-        elif z > -1.5: st.warning("🟡 **CAUTION:** Moderate deviation. Consider active recovery.")
-        else: st.error("🔴 **REST:** Large deviation detected. Significant cardiovascular strain.")
-
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.subheader("Personal Gauge")
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number+delta", value=latest, delta={'reference': baseline},
-                gauge={'axis': {'range': [0, 150]}, 'bar': {'color': "black", 'thickness': 0.2},
-                       'steps': [{'range': [0, max(0, baseline - 1.5*std_v)], 'color': "#ff4b4b"},
-                                 {'range': [max(0, baseline - 1.5*std_v), max(0, baseline - 0.5*std_v)], 'color': "#ffff00"},
-                                 {'range': [max(0, baseline - 0.5*std_v), 150], 'color': "#00cc96"}],
-                       'threshold': {'line': {'color': "black", 'width': 4}, 'value': baseline}}))
-            st.plotly_chart(fig, use_container_width=True)
-            
-        with col2:
-            st.subheader("Trends & Team Context")
-            plot_df = u_df.tail(10).copy()
-            plot_df['Personal_Baseline'] = baseline
-            plot_df['Team_Avg'] = df['RMSSD'].mean()
-            st.line_chart(plot_df.set_index('Timestamp')[['RMSSD', 'Personal_Baseline', 'Team_Avg']])
-        
-        st.divider()
-        st.subheader("📋 Your Recent History")
-        st.table(u_df[['Timestamp', 'HR', 'RMSSD', 'Soreness', 'Location']].tail(5))
-    else: 
-        st.info("Welcome! Please perform a scan or enter your first reading to see your baseline.")
-
-# --- ADMIN PANEL ---
-elif st.session_state.role == "admin":
-    st.title("👑 Coach Administration Panel")
-    if not df.empty:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Active Students", df['User_ID'].nunique())
-        m2.metric("Group HR Avg", f"{int(df['HR'].mean())} BPM")
-        m3.metric("Global Compliance", f"{len(df)} Logs")
-        
-        st.subheader("Team Readiness Leaderboard")
-        leaderboard = df.sort_values('Timestamp', ascending=False)
-        st.dataframe(leaderboard, use_container_width=True)
-        st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
-
+    with col_chart:
+        if not u_df.empty:
+            st.line_chart(u_df.set_index('Timestamp')[['RMSSD', 'HR']])
+        else:
+            st.info("Complete your first scan to see your trends.")
