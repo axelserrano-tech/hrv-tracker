@@ -15,7 +15,7 @@ def hrv_sensor_component():
             .container {
                 background: #f0f2f6; padding: 15px; border-radius: 15px; 
                 text-align: center; border: 1px solid #d1d5db; font-family: sans-serif;
-                max-width: 100%; box-sizing: border-box;
+                width: 100%; max-width: 400px; margin: auto; box-sizing: border-box;
             }
             #waveCanvas {
                 background: #000; border-radius: 8px; margin: 10px 0; 
@@ -29,7 +29,7 @@ def hrv_sensor_component():
 
         <div class="container">
             <p id="status-text" style="margin: 5px 0;">📊 <b>Hardware:</b> Ready</p>
-            <canvas id="waveCanvas"></canvas>
+            <canvas id="waveCanvas" width="400" height="120"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
             <button id="camera-btn" onclick="initSensor()">Enable Camera & Flash</button>
         </div>
@@ -38,18 +38,19 @@ def hrv_sensor_component():
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
-        canvas.width = 300; 
-        canvas.height = 120;
         let points = new Array(100).fill(60); 
 
-        function drawWave(value) {
+        function drawWave(value, baseline) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
             ctxWave.strokeStyle = '#00ff00';
             ctxWave.lineWidth = 3;
             ctxWave.beginPath();
-            let y = 60 - ((value - 128) * 1.5); 
+            
+            // Auto-scale wave to fit the box based on the measured baseline
+            let y = 60 - ((value - baseline) * 10); 
             points.push(y);
             points.shift();
+
             for (let i = 0; i < points.length; i++) {
                 let x = i * (canvas.width / 100);
                 if (i === 0) ctxWave.moveTo(x, points[i]);
@@ -81,22 +82,19 @@ def hrv_sensor_component():
                 const procCtx = procCanvas.getContext('2d', { alpha: false });
                 procCanvas.width = 32; procCanvas.height = 32;
 
-                // --- ACCURACY SETUP ---
                 const startTime = Date.now();
-                const duration = 60000;
+                const totalDuration = 65000; // 5s calibration + 60s scan
                 let beatTimes = []; 
                 let lastValue = 0;
                 let isPeak = false;
                 let smoothedValue = 0;
-                const alpha = 0.15; // Filter strength: 0.15 is smooth but responsive
-                let lastBeatTime = 0;
-                const minIBI = 450; // Ignore anything faster than 133 BPM (prevents noise)
+                let baseline = 0;
+                let calibrationSamples = [];
 
                 function process() {
                     if (!scanning) return;
                     const now = Date.now();
                     const elapsed = now - startTime;
-                    const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
 
                     procCtx.drawImage(video, 0, 0, 32, 32);
                     const pixels = procCtx.getImageData(0, 0, 32, 32).data;
@@ -104,25 +102,37 @@ def hrv_sensor_component():
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
                     const avgGreen = greenSum / 1024;
 
-                    // Apply Low-Pass Filter
-                    smoothedValue = (alpha * avgGreen) + (1 - alpha) * smoothedValue;
-                    drawWave(smoothedValue);
+                    // Filter noise
+                    smoothedValue = (0.15 * avgGreen) + (0.85) * smoothedValue;
 
-                    // Peak Detection with Artifact Rejection
-                    if (smoothedValue < lastValue && !isPeak && (now - lastBeatTime > minIBI)) {
-                        // Check if the drop is meaningful (blood volume surge)
-                        if (lastValue - smoothedValue > 0.03) {
+                    // --- PHASE 1: CALIBRATION (First 5 Seconds) ---
+                    if (elapsed < 5000) {
+                        calibrationSamples.push(smoothedValue);
+                        baseline = calibrationSamples.reduce((a,b) => a+b, 0) / calibrationSamples.length;
+                        statusText.innerHTML = `⚙️ <b>Calibrating Pressure...</b> Keep Still`;
+                        drawWave(smoothedValue, baseline);
+                        requestAnimationFrame(process);
+                        return;
+                    }
+
+                    // --- PHASE 2: ACCURATE SCAN ---
+                    const remaining = Math.max(0, Math.ceil((totalDuration - elapsed) / 1000));
+                    drawWave(smoothedValue, baseline);
+
+                    // Improved Peak Detection based on the calibrated baseline
+                    if (smoothedValue < lastValue && !isPeak && (now - beatTimes[beatTimes.length-1] > 450 || !beatTimes.length)) {
+                        // Detect 2% drop from local baseline
+                        if (lastValue - smoothedValue > (baseline * 0.001)) {
                             beatTimes.push(now);
-                            lastBeatTime = now;
                             isPeak = true;
                         }
-                    } else if (smoothedValue > lastValue + 0.03) {
+                    } else if (smoothedValue > lastValue + (baseline * 0.001)) {
                         isPeak = false;
                     }
                     lastValue = smoothedValue;
 
-                    if (elapsed < duration) {
-                        let currentBPM = beatTimes.length > 3 ? Math.round((beatTimes.length / (elapsed / 60000))) : "--";
+                    if (elapsed < totalDuration) {
+                        let currentBPM = beatTimes.length > 3 ? Math.round((beatTimes.length / ((elapsed-5000) / 60000))) : "--";
                         statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
                         requestAnimationFrame(process);
                     } else {
@@ -131,12 +141,10 @@ def hrv_sensor_component():
                         
                         let rrIntervals = [];
                         for(let i = 1; i < beatTimes.length; i++) { rrIntervals.push(beatTimes[i] - beatTimes[i-1]); }
-                        
                         let diffs = [];
                         for(let i = 1; i < rrIntervals.length; i++) { diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2)); }
-                        
                         let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 0;
-                        let finalHR = Math.round((beatTimes.length / (duration / 60000)));
+                        let finalHR = Math.round((beatTimes.length / 1)); // 60s scan = beats count
 
                         statusText.innerHTML = "✅ <b>Scan Complete!</b>";
                         window.parent.postMessage({
@@ -145,7 +153,7 @@ def hrv_sensor_component():
                         }, '*');
                     }
                 }
-                video.onplay = () => process();
+                video.onplay = () => { smoothedValue = 128; process(); };
             } catch (err) {
                 statusText.innerHTML = "❌ Error: " + err.message;
             }
@@ -307,6 +315,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
