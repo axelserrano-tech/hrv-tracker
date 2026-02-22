@@ -7,59 +7,54 @@ import os
 import time
 import streamlit.components.v1 as components
 
-# This function creates the "Bridge"
+# --- 1. RESEARCH-GRADE SENSOR COMPONENT ---
 def hrv_sensor_component():
     return components.html(
         """
         <style>
             .container {
-                background: #000; padding: 15px; border-radius: 20px; 
+                background: #111; padding: 15px; border-radius: 15px; 
                 text-align: center; color: white; font-family: sans-serif;
                 width: 100%; max-width: 400px; margin: auto; box-sizing: border-box;
-                border: 2px solid #333;
+                border: 1px solid #333;
             }
             #waveCanvas {
                 background: #000; border-radius: 10px; margin: 10px 0; 
-                width: 100%; height: 130px; display: block;
+                width: 100%; height: 120px; display: block;
             }
-            .bpm-text { font-size: 54px; font-weight: 800; color: #ff3b30; margin: 5px 0; }
-            .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+            .bpm-text { font-size: 48px; font-weight: 800; color: #00ff41; margin: 0; }
+            #progress-bg { width: 100%; height: 6px; background: #333; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+            #progress-fill { width: 0%; height: 100%; background: #00ff41; transition: linear 1s; }
             #camera-btn {
-                padding: 15px; background: #ff3b30; color: white; border: none; 
+                padding: 15px; background: #00ff41; color: black; border: none; 
                 border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px;
             }
         </style>
 
         <div class="container">
-            <div class="label" id="status-text">Sensor Ready</div>
+            <div id="status" style="font-size:12px; color: #888;">READY FOR 60s SCAN</div>
             <div class="bpm-text" id="bpm-val">--</div>
-            <div class="label">BPM</div>
+            <div id="progress-bg"><div id="progress-fill"></div></div>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()">START ACCURATE MEASUREMENT</button>
+            <button id="camera-btn" onclick="initSensor()">START 60s MEASUREMENT</button>
         </div>
 
         <script>
         let scanning = false;
+        let beatTimes = [];
+        let waveData = new Array(100).fill(0);
         const canvas = document.getElementById('waveCanvas');
         const ctx = canvas.getContext('2d');
-        const bpmText = document.getElementById('bpm-val');
-        const statusText = document.getElementById('status-text');
 
-        let waveData = new Array(100).fill(0);
-        
         function draw(signal) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             waveData.push(signal);
             waveData.shift();
-            
-            // AUTO-FIT WAVELENGTH: Finds the max height of the current wave to keep it visible
-            let maxVal = Math.max(...waveData.map(Math.abs)) || 1;
+            let maxVal = Math.max(...waveData.map(Math.abs)) || 0.1;
             let scale = (canvas.height / 2.5) / maxVal;
-
-            ctx.strokeStyle = '#32d74b'; // Medical Green
+            ctx.strokeStyle = '#00ff41';
             ctx.lineWidth = 3;
-            ctx.lineJoin = 'round';
             ctx.beginPath();
             for(let i=0; i<100; i++){
                 let x = (canvas.width / 100) * i;
@@ -72,80 +67,75 @@ def hrv_sensor_component():
         async function initSensor() {
             if (scanning) return;
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment" }, audio: false
-                });
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 const video = document.getElementById('video');
                 video.srcObject = stream;
                 document.getElementById('camera-btn').style.display = 'none';
                 scanning = true;
 
                 const track = stream.getVideoTracks()[0];
-                const capabilities = track.getCapabilities();
-                if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
+                const caps = track.getCapabilities();
+                if (caps.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
                 const pCanvas = document.createElement('canvas');
                 const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
                 pCanvas.width = 20; pCanvas.height = 20;
 
+                let startTime = performance.now();
                 let lastBeat = 0;
-                let beatIntervals = [];
                 let lowPass = 0;
-                let highPass = 0;
 
                 function process() {
                     if (!scanning) return;
+                    let now = performance.now();
+                    let elapsed = (now - startTime) / 1000;
+
+                    if (elapsed >= 60) {
+                        scanning = false; track.stop();
+                        // Final HRV RMSSD Calculation
+                        let rr = [];
+                        for(let i=1; i<beatTimes.length; i++) rr.push(beatTimes[i]-beatTimes[i-1]);
+                        let diffSq = rr.slice(1).map((val, i) => Math.pow(val - rr[i], 2));
+                        let rmssd = Math.sqrt(diffSq.reduce((a,b)=>a+b, 0) / diffSq.length);
+                        
+                        window.parent.postMessage({
+                            type: 'streamlit:setComponentValue',
+                            value: { hr: Math.round(60000 / (rr.reduce((a,b)=>a+b,0)/rr.length)), hrv: Math.round(rmssd) }
+                        }, '*');
+                        return;
+                    }
+
+                    document.getElementById('progress-fill').style.width = (elapsed/60*100) + "%";
                     pCtx.drawImage(video, 0, 0, 20, 20);
                     const pixels = pCtx.getImageData(0, 0, 20, 20).data;
-                    
                     let green = 0;
                     for (let i = 1; i < pixels.length; i += 4) green += pixels[i];
                     green /= 400;
 
-                    // ADVANCED FILTERING: Removes camera flicker and slow hand movement
                     lowPass = (0.9 * lowPass) + (0.1 * green);
-                    let diff = green - lowPass;
-                    highPass = (0.8 * highPass) + (0.2 * diff);
-                    
-                    draw(highPass);
+                    let signal = green - lowPass;
+                    draw(signal);
 
-                    const now = performance.now();
-                    
-                    // PEAK DETECTION LOGIC
-                    // 1. Must be a significant upward swing
-                    // 2. Cooldown of 400ms (prevents high numbers/double counting)
-                    if (highPass > 0.2 && (now - lastBeat) > 400) {
-                        if (lastBeat !== 0) {
-                            let currentIBI = now - lastBeat;
-                            // Physiological filter: Only accept 45-160 BPM
-                            if (currentIBI > 375 && currentIBI < 1333) {
-                                beatIntervals.push(currentIBI);
-                                if (beatIntervals.length > 8) beatIntervals.shift();
-                                
-                                // MEDIAN CALCULATION: The secret to 94%+ accuracy
-                                let sorted = [...beatIntervals].sort((a,b) => a-b);
-                                let median = sorted[Math.floor(sorted.length / 2)];
-                                bpmText.innerText = Math.round(60000 / median);
-                                statusText.innerText = "PULSE STABLE";
-                                statusText.style.color = "#32d74b";
-                            }
+                    if (signal > 0.15 && (now - lastBeat) > 450) {
+                        beatTimes.push(now);
+                        if(beatTimes.length > 2) {
+                            let instBPM = Math.round(60000 / (now - lastBeat));
+                            document.getElementById('bpm-val').innerText = instBPM;
                         }
                         lastBeat = now;
                     }
-
                     requestAnimationFrame(process);
                 }
                 process();
-            } catch (e) { statusText.innerText = "HARDWARE ERROR"; }
+            } catch (e) { alert("Camera Error"); }
         }
         </script>
         """,
-        height=400,
+        height=380,
     )
-# --- INITIAL SETUP ---
-st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
 
-# --- DATA ENGINE ---
+# --- 2. INITIAL SETUP ---
+st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
 DB_FILE = "student_health_data.csv"
 
 def load_data():
@@ -188,39 +178,23 @@ with st.sidebar:
     
     if st.session_state.role == "student":
         st.header("🕒 Daily Measurement")
-        hrv_sensor_component()
-        # --- FEATURE PREVIEW: PPG FLASH SCAN ---
-        st.info("💡 **PPG Flash Scan (Mock):** Based on research, place your finger over the camera and flash for a 60-second scan.")
+        # CAPTURE DATA FROM SENSOR
+        sensor_data = hrv_sensor_component()
         
-        if st.button("🚀 Start Pulse Scan"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            chart_placeholder = st.empty()
-            
-            # Simulated 60s acquisition window (compressed for demo)
-            for i in range(100):
-                progress_bar.progress(i + 1)
-                # Create a mock PPG wave visualization based on green channel processing
-                mock_wave = np.sin(np.linspace(0, 5, 50) + i/5) + np.random.normal(0, 0.05, 50)
-                chart_placeholder.line_chart(mock_wave)
-                status_text.text(f"Acquiring PPG Signal... {i}%")
-                time.sleep(0.04)
-            
-            # Simulate rMSSD calculation from beat-to-beat accuracy models
-            st.session_state['detected_hr'] = np.random.randint(60, 85)
-            st.session_state['detected_hrv'] = np.random.randint(45, 75)
-            st.success("✅ Scan Complete! Validating RMSSD signal...")
+        if sensor_data:
+            st.session_state['detected_hr'] = sensor_data['hr']
+            st.session_state['detected_hrv'] = sensor_data['hrv']
+            st.success(f"✅ Scan Complete! HR: {sensor_data['hr']} | HRV: {sensor_data['hrv']}")
 
         st.divider()
 
         # --- DATA ENTRY FORM ---
         with st.form("entry", clear_on_submit=True):
-            # Form defaults to "detected" values from the scan above
             hr = st.number_input("Heart Rate (BPM)", 40, 160, st.session_state.get('detected_hr', 70))
             hrv = st.number_input("HRV (RMSSD ms)", 5, 250, st.session_state.get('detected_hrv', 50))
             
             st.write("---")
-            st.write("🧘 **Anatomical Soreness Map** (The 'Dessert')")
+            st.write("🧘 **Anatomical Soreness Map**")
             c1, c2 = st.columns(2)
             with c1:
                 s1, s2, s3 = st.checkbox("Upper Back"), st.checkbox("Shoulders"), st.checkbox("Chest")
@@ -246,67 +220,38 @@ with st.sidebar:
 if st.session_state.role == "student":
     u_df = df[df['User_ID'] == st.session_state.user].copy()
     if not u_df.empty:
-        # Scientific Baseline Logic (RMSSD focus as requested)
         baseline = u_df['RMSSD'].mean()
         std_v = u_df['RMSSD'].std() if len(u_df) > 1 else 10
         latest = u_df['RMSSD'].iloc[-1]
         z = (latest - baseline) / std_v if std_v != 0 else 0
         
-        # Readiness Advice Logic
         if z > -0.5: st.success("🟢 **READY:** Optimal recovery. Baseline stable.")
         elif z > -1.5: st.warning("🟡 **CAUTION:** Moderate deviation. Consider active recovery.")
         else: st.error("🔴 **REST:** Large deviation detected. Significant cardiovascular strain.")
 
         col1, col2 = st.columns([1, 2])
         with col1:
-            st.subheader("Personal Gauge")
+            st.subheader("Readiness Gauge")
             fig = go.Figure(go.Indicator(
                 mode="gauge+number+delta", value=latest, delta={'reference': baseline},
                 gauge={'axis': {'range': [0, 150]}, 'bar': {'color': "black", 'thickness': 0.2},
                        'steps': [{'range': [0, max(0, baseline - 1.5*std_v)], 'color': "#ff4b4b"},
                                  {'range': [max(0, baseline - 1.5*std_v), max(0, baseline - 0.5*std_v)], 'color': "#ffff00"},
-                                 {'range': [max(0, baseline - 0.5*std_v), 150], 'color': "#00cc96"}],
-                       'threshold': {'line': {'color': "black", 'width': 4}, 'value': baseline}}))
+                                 {'range': [max(0, baseline - 0.5*std_v), 150], 'color': "#00cc96"}]}))
             st.plotly_chart(fig, use_container_width=True)
             
         with col2:
-            st.subheader("Trends & Team Context")
+            st.subheader("Trends")
             plot_df = u_df.tail(10).copy()
             plot_df['Personal_Baseline'] = baseline
-            plot_df['Team_Avg'] = df['RMSSD'].mean()
-            st.line_chart(plot_df.set_index('Timestamp')[['RMSSD', 'Personal_Baseline', 'Team_Avg']])
-        
-        st.divider()
-        st.subheader("📋 Your Recent History")
-        st.table(u_df[['Timestamp', 'HR', 'RMSSD', 'Soreness', 'Location']].tail(5))
+            st.line_chart(plot_df.set_index('Timestamp')[['RMSSD', 'Personal_Baseline']])
     else: 
-        st.info("Welcome! Please perform a scan or enter your first reading to see your baseline.")
+        st.info("Perform a 60s scan to establish your recovery baseline.")
 
-# --- ADMIN PANEL ---
 elif st.session_state.role == "admin":
     st.title("👑 Coach Administration Panel")
     if not df.empty:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Active Students", df['User_ID'].nunique())
-        m2.metric("Group HR Avg", f"{int(df['HR'].mean())} BPM")
-        m3.metric("Global Compliance", f"{len(df)} Logs")
-        
+        st.metric("Active Students", df['User_ID'].nunique())
         st.subheader("Team Readiness Leaderboard")
-        leaderboard = df.sort_values('Timestamp', ascending=False)
-        st.dataframe(leaderboard, use_container_width=True)
-        st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        st.dataframe(df.sort_values('Timestamp', ascending=False), use_container_width=True)
+        st.download_button("Export CSV", df.to_csv(index=False), "readiness_export.csv")
