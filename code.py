@@ -6,203 +6,192 @@ from datetime import datetime
 import os
 import streamlit.components.v1 as components
 
-# --- 1. SETTINGS & STATE ---
-st.set_page_config(page_title="HRV Training Pro", layout="wide")
+# --- 1. PERSISTENCE & DATABASE ---
+DB_FILE = "readiness_log.csv"
 
-# Persistent storage for session data
-if 'hr' not in st.session_state: st.session_state.hr = 0
-if 'hrv' not in st.session_state: st.session_state.hrv = 0
-if 'last_update' not in st.session_state: st.session_state.last_update = None
-
-DB_FILE = "athlete_data_log.csv"
-
-def load_db():
+def load_data():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
         return df
-    return pd.DataFrame(columns=['User', 'Timestamp', 'HR', 'HRV', 'Soreness', 'Weight', 'Sex'])
+    return pd.DataFrame(columns=['User', 'Timestamp', 'HR', 'RMSSD', 'Soreness', 'Locations'])
 
-# --- 2. THE OPTICAL PPG ENGINE (JavaScript) ---
-# This script analyzes the GREEN channel (highest pulse contrast)
-PPG_ENGINE_HTML = """
-<div style="background: #111; color: white; padding: 20px; border-radius: 15px; text-align: center; font-family: sans-serif; border: 2px solid #444;">
-    <h3 id="status" style="margin:0; color: #ff4b4b;">Sensor Offline</h3>
-    <div id="heart-ui" style="font-size: 60px; margin: 20px 0; transition: transform 0.1s ease;">❤️</div>
-    <div id="bpm-live" style="font-size: 28px; font-weight: bold; color: #00ff00;">-- BPM</div>
-    
-    <video id="v" width="10" height="10" style="position:absolute; opacity:0;" autoplay playsinline></video>
-    <button id="start-btn" onclick="initSensor()" style="width:100%; padding:15px; background:#ff4b4b; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">START 60s MEASUREMENT</button>
-</div>
+# --- 2. THE PPG BRIDGE (JAVASCRIPT) ---
+# This uses the Green-Channel variation to detect blood volume pulses.
+def hrv_bridge_component():
+    components.html(
+        """
+        <div style="background:#1e1e1e; color:white; padding:20px; border-radius:15px; text-align:center; font-family:sans-serif; border:2px solid #333;">
+            <h3 id="msg" style="margin:0; color:#00ff00;">READY TO SCAN</h3>
+            <canvas id="wave" width="300" height="60" style="background:#000; border-radius:5px; margin:10px 0; width:100%;"></canvas>
+            <video id="v" width="1" height="1" style="opacity:0;" autoplay playsinline></video>
+            <button id="btn" onclick="start()" style="width:100%; padding:15px; background:#ff4b4b; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">START 20s SCAN</button>
+        </div>
 
-<script>
-let samples = [], times = [], isScanning = false;
+        <script>
+        let samples = [], times = [], scanning = false;
+        const canvas = document.getElementById('wave');
+        const ctx = canvas.getContext('2d');
 
-async function initSensor() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
-        const v = document.getElementById('v');
-        v.srcObject = stream;
-        
-        const track = stream.getVideoTracks()[0];
-        try { await track.applyConstraints({advanced: [{torch: true}]}); } catch(e) {}
-
-        document.getElementById('start-btn').style.display = 'none';
-        document.getElementById('status').innerText = "🔴 ANALYZING PULSE...";
-        isScanning = true;
-        const startT = Date.now();
-
-        // High-speed sampling (30fps)
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d', {alpha: false});
-        canvas.width = 10; canvas.height = 10;
-
-        const process = () => {
-            if(!isScanning) return;
-            ctx.drawImage(v, 0, 0, 10, 10);
-            const pixels = ctx.getImageData(0,0,10,10).data;
+        async function start() {
+            const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
+            const v = document.getElementById('v');
+            v.srcObject = stream;
+            const track = stream.getVideoTracks()[0];
+            try { await track.applyConstraints({advanced: [{torch: true}]}); } catch(e) {}
             
-            // PPG logic: Blood absorbs Green light
-            let greenSum = 0;
-            for(let i=1; i<pixels.length; i+=4) greenSum += pixels[i];
+            document.getElementById('btn').style.display = 'none';
+            scanning = true;
+            const startT = Date.now();
             
-            const now = Date.now();
-            samples.push(greenSum/100);
-            times.push(now);
+            const pCanvas = document.createElement('canvas');
+            const pCtx = pCanvas.getContext('2d');
+            pCanvas.width = 10; pCanvas.height = 10;
 
-            // Pulse animation based on signal dips
-            if(samples.length > 2 && samples[samples.length-1] < samples[samples.length-2]) {
-                document.getElementById('heart-ui').style.transform = 'scale(1.2)';
-                setTimeout(() => { document.getElementById('heart-ui').style.transform = 'scale(1)'; }, 100);
-            }
+            const loop = () => {
+                if(!scanning) return;
+                pCtx.drawImage(v, 0, 0, 10, 10);
+                const data = pCtx.getImageData(0,0,10,10).data;
+                let g = 0; for(let i=1; i<data.length; i+=4) g += data[i];
+                
+                samples.push(g/100);
+                times.push(Date.now());
 
-            if(now - startT < 60000) {
-                document.getElementById('bpm-live').innerText = Math.round((now-startT)/1000) + "s / 60s";
-                requestAnimationFrame(process);
-            } else {
-                isScanning = false;
-                track.stop();
-                calculateResults();
-            }
-        };
-        process();
-    } catch(e) { alert("Camera error. Ensure HTTPS and permissions."); }
-}
+                // Draw Waveform
+                ctx.fillStyle = '#000'; ctx.fillRect(0,0,300,60);
+                ctx.strokeStyle = '#00ff00'; ctx.beginPath();
+                for(let i=0; i<100; i++) {
+                    let val = samples[samples.length - 100 + i] || 0;
+                    ctx.lineTo(i*3, 30 + (val - samples[samples.length-1])*5);
+                }
+                ctx.stroke();
 
-function calculateResults() {
-    // Replica RMSSD Algorithm
-    // Detects local minima (systolic peaks in PPG)
-    let peaks = [];
-    for(let i=2; i<samples.length-2; i++) {
-        if(samples[i] < samples[i-1] && samples[i] < samples[i+1]) {
-            peaks.push(times[i]);
+                if(Date.now() - startT < 20000) {
+                    document.getElementById('msg').innerText = "🔴 SCANNING: " + Math.ceil((20000-(Date.now()-startT))/1000) + "s";
+                    requestAnimationFrame(loop);
+                } else {
+                    scanning = false;
+                    track.stop();
+                    finish();
+                }
+            };
+            loop();
         }
-    }
+
+        function finish() {
+            // Precise Peak Detection for HRV
+            let peaks = [];
+            for(let i=2; i<samples.length-2; i++) {
+                if(samples[i] < samples[i-1] && samples[i] < samples[i+1]) peaks.push(times[i]);
+            }
+            let rr = [];
+            for(let i=1; i<peaks.length; i++) {
+                let diff = peaks[i]-peaks[i-1];
+                if(diff > 400 && diff < 1200) rr.push(diff);
+            }
+            
+            const hr = Math.round(60000 / (rr.reduce((a,b)=>a+b,0)/rr.length));
+            let dSq = 0;
+            for(let i=1; i<rr.length; i++) dSq += Math.pow(rr[i]-rr[i-1], 2);
+            const rmssd = Math.round(Math.sqrt(dSq / (rr.length - 1)));
+
+            window.parent.postMessage({
+                type: 'streamlit:setComponentValue',
+                value: {hr: hr, rmssd: rmssd, key: Date.now()}
+            }, '*');
+            document.getElementById('msg').innerText = "✅ SYNCED";
+        }
+        </script>
+        """, height=220
+    )
+
+# --- 3. THE APP ENGINE ---
+st.set_page_config(page_title="Cardio-Baseline Pro", layout="wide")
+
+if 'hr_val' not in st.session_state: st.session_state.hr_val = 0
+if 'hrv_val' not in st.session_state: st.session_state.hrv_val = 0
+if 'last_key' not in st.session_state: st.session_state.last_key = 0
+
+df = load_data()
+
+st.title("🛡️ Kubios-Style Readiness Dashboard")
+
+col_scan, col_entry = st.columns([1, 1.3])
+
+with col_scan:
+    st.subheader("1. Pulse Acquisition")
+    # This captures the JS data
+    sensor_data = hrv_bridge_component()
     
-    let rrIntervals = [];
-    for(let i=1; i<peaks.length; i++) {
-        let diff = peaks[i] - peaks[i-1];
-        if(diff > 400 && diff < 1500) rrIntervals.push(diff);
-    }
+    # Critical Sync Check
+    if sensor_data and sensor_data.get('key', 0) > st.session_state.last_key:
+        st.session_state.hr_val = sensor_data['hr']
+        st.session_state.hrv_val = sensor_data['rmssd']
+        st.session_state.last_key = sensor_data['key']
+        st.rerun()
 
-    const avgRR = rrIntervals.reduce((a,b)=>a+b, 0) / rrIntervals.length;
-    const finalHR = Math.round(60000 / avgRR);
-
-    let sumSqDiff = 0;
-    for(let i=1; i<rrIntervals.length; i++) {
-        sumSqDiff += Math.pow(rrIntervals[i] - rrIntervals[i-1], 2);
-    }
-    const finalRMSSD = Math.round(Math.sqrt(sumSqDiff / (rrIntervals.length - 1)));
-
-    // SEND DATA TO PYTHON
-    window.parent.postMessage({
-        type: 'streamlit:setComponentValue',
-        value: {hr: finalHR, hrv: finalRMSSD, ts: Date.now()}
-    }, '*');
-    
-    document.getElementById('status').innerText = "✅ DATA SYNCED";
-    document.getElementById('bpm-live').innerText = finalHR + " BPM";
-}
-</script>
-"""
-
-# --- 3. DASHBOARD LOGIC ---
-df = load_db()
-
-st.title("🏆 Kubios HRV Athlete Portal")
-st.markdown("---")
-
-col_left, col_right = st.columns([1, 1.3])
-
-with col_left:
-    st.subheader("1. Pulse Scan")
-    # This captures the JSON from the JS "postMessage"
-    capture_data = components.html(PPG_ENGINE_HTML, height=320)
-    
-    # Update logic: Only trigger if the timestamp (ts) has changed
-    if capture_data and 'ts' in capture_data:
-        if capture_data['ts'] != st.session_state.last_update:
-            st.session_state.hr = capture_data['hr']
-            st.session_state.hrv = capture_data['hrv']
-            st.session_state.last_update = capture_data['ts']
-            st.rerun()
-
-with col_right:
-    st.subheader("2. Readiness Entry")
-    with st.form("readiness_form"):
-        # Forms use the Session State updated by the camera
+with col_entry:
+    st.subheader("2. Subjective Recovery")
+    with st.form("log_entry", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        hr_val = c1.number_input("Recorded HR (BPM)", value=int(st.session_state.hr))
-        hrv_val = c2.number_input("Recorded HRV (RMSSD)", value=int(st.session_state.hrv))
+        hr = c1.number_input("Detected HR (BPM)", value=st.session_state.hr_val)
+        rmssd = c2.number_input("Detected HRV (RMSSD)", value=st.session_state.hrv_val)
         
-        soreness = st.select_slider("Muscle Soreness (1-10)", options=range(1, 11))
+        sore_val = st.select_slider("Muscle Soreness (1-10)", range(1, 11))
         
         
         
-        st.write("**Subjective Bio-factors**")
-        weight = st.number_input("Weight (kg)", 40, 150, 75)
-        sex = st.selectbox("Sex", ["Male", "Female"])
+        locs = st.multiselect("Identify Sore Areas", ["Lower Back", "Quads", "Hamstrings", "Calves", "Shoulders", "Core"])
         
-        if st.form_submit_button("Submit to Dashboard"):
-            new_entry = pd.DataFrame([[st.session_state.user or "User_1", datetime.now(), hr_val, hrv_val, soreness, weight, sex]], columns=df.columns)
-            pd.concat([df, new_entry]).to_csv(DB_FILE, index=False)
-            st.success("Entry Saved! Baseline updated.")
+        if st.form_submit_button("Record Daily Baseline"):
+            new_data = pd.DataFrame({
+                'User': ["Current_Student"], 'Timestamp': [datetime.now()],
+                'HR': [hr], 'RMSSD': [rmssd], 'Soreness': [sore_val], 'Locations': [", ".join(locs)]
+            })
+            df = pd.concat([df, new_data], ignore_index=True)
+            df.to_csv(DB_FILE, index=False)
+            st.success("Data stored in administrative log.")
             st.rerun()
 
-# --- 4. THE KUBIOS GAUGE & TRENDS ---
+# --- 4. DATA VISUALIZATION (THE KUBIOS REPLICA) ---
 st.divider()
 
-if len(df) >= 3:
-    st.header("📈 Readiness Analytics")
+if not df.empty:
+    # Baseline Math
+    baseline_rmssd = df['RMSSD'].mean()
+    std_rmssd = df['RMSSD'].std() if len(df) > 1 else 10
+    latest_rmssd = df['RMSSD'].iloc[-1]
     
-    # 7-day rolling window
-    user_df = df.tail(7)
-    latest_hrv = user_df['HRV'].iloc[-1]
-    baseline_hrv = user_df['HRV'].mean()
-    std_hrv = user_df['HRV'].std() if len(user_df) > 1 else 5
-
-    g_col, t_col = st.columns([1, 2])
+    vis_col, trend_col = st.columns([1, 2])
     
-    with g_col:
-        st.subheader("Kubios Readiness Gauge")
+    with vis_col:
+        st.subheader("Cardiovascular Readiness")
+        # Color Coding: Green = Normal, Yellow = 0.5-1.5 SD, Red = >1.5 SD
         fig = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = latest_hrv,
+            mode = "gauge+number+delta",
+            value = latest_rmssd,
+            delta = {'reference': baseline_rmssd},
             gauge = {
-                'axis': {'range': [20, 120]},
-                'bar': {'color': "black"},
+                'axis': {'range': [0, 150]},
+                'bar': {'color': "black", 'thickness': 0.2},
                 'steps': [
-                    {'range': [0, baseline_hrv - std_hrv], 'color': "#ff4b4b"}, # Red
-                    {'range': [baseline_hrv - std_hrv, baseline_hrv - (0.5*std_hrv)], 'color': "#ffea00"}, # Yellow
-                    {'range': [baseline_hrv - (0.5*std_hrv), 120], 'color': "#00cc96"} # Green
+                    {'range': [0, baseline_rmssd - 1.5*std_rmssd], 'color': "#ff4b4b"},
+                    {'range': [baseline_rmssd - 1.5*std_rmssd, baseline_rmssd - 0.5*std_rmssd], 'color': "#ffff00"},
+                    {'range': [baseline_rmssd - 0.5*std_rmssd, 150], 'color': "#00cc96"}
                 ],
-                'threshold': {'line': {'color': "black", 'width': 4}, 'value': baseline_hrv}
+                'threshold': {'line': {'color': "black", 'width': 4}, 'value': baseline_rmssd}
             }
         ))
         st.plotly_chart(fig, use_container_width=True)
-        
-    with t_col:
-        st.subheader("7-Day Trend View")
-        st.line_chart(user_df.set_index('Timestamp')[['HRV', 'HR']])
-else:
-    st.info("📊 Collecting data... Once you submit 3 measurements, your personal baseline gauge will appear.")
+
+    with trend_col:
+        st.subheader("7-Day Trend Analysis")
+        # Line chart showing user's RMSSD vs their Personal Baseline
+        df_plot = df.tail(7).copy()
+        df_plot['Baseline'] = baseline_rmssd
+        st.line_chart(df_plot.set_index('Timestamp')[['RMSSD', 'Baseline']])
+
+# --- 5. ADMINISTRATIVE VIEW ---
+with st.expander("🔐 Administrative Compliance Log"):
+    st.write("Full audit trail for recovery oversight.")
+    st.dataframe(df.sort_values(by='Timestamp', ascending=False), use_container_width=True)
