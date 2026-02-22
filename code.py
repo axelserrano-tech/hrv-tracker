@@ -5,7 +5,30 @@ import plotly.graph_objects as go
 from datetime import datetime
 import os
 import time
+import streamlit.components.v1 as components
 
+# This function creates the "Bridge"
+def hrv_sensor_component():
+    # We use an iframe to run the JS sensor
+    components.html(
+        """
+        <div style="background: #f0f2f6; padding: 10px; border-radius: 10px;">
+            <p>📊 <b>Hardware Status:</b> Waiting for Camera...</p>
+            <button onclick="initSensor()" style="padding: 10px; background: #ff4b4b; color: white; border: none; border-radius: 5px;">
+                Enable Camera & Flash
+            </button>
+        </div>
+
+        <script>
+        async function initSensor() {
+            // This is where your JS logic lives
+            alert("Camera Access Requested for PPG Scan");
+            // In the next step, we will add the pulse-detection math here
+        }
+        </script>
+        """,
+        height=150,
+    )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
 
@@ -52,7 +75,7 @@ with st.sidebar:
     
     if st.session_state.role == "student":
         st.header("🕒 Daily Measurement")
-        
+        hrv_sensor_component()
         # --- FEATURE PREVIEW: PPG FLASH SCAN ---
         st.info("💡 **PPG Flash Scan (Mock):** Based on research, place your finger over the camera and flash for a 60-second scan.")
         
