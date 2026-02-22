@@ -60,94 +60,228 @@ def hrv_sensor_component():
             </button>
         </div>
 
-        <script>
-        let scanning = false;
-        const canvas = document.getElementById('waveCanvas');
-        const ctxWave = canvas.getContext('2d');
-        
-        // Fix: Set internal canvas resolution to match its displayed size
-        canvas.width = canvas.offsetWidth;
-        canvas.height = 80;
-        
-        let points = new Array(100).fill(40); 
+      <script>
+let scanning = false;
 
-        function drawWave(value) {
-            ctxWave.clearRect(0, 0, canvas.width, canvas.height);
-            ctxWave.strokeStyle = '#00ff00';
-            ctxWave.lineWidth = 2;
-            ctxWave.beginPath();
-            
-            // Normalize for 80px height
-            let y = 40 - ((value - 128) * 1.2); 
-            points.push(y);
-            points.shift();
+const canvas = document.getElementById('waveCanvas');
+const ctxWave = canvas.getContext('2d');
 
-            for (let i = 0; i < points.length; i++) {
-                let x = i * (canvas.width / 100);
-                if (i === 0) ctxWave.moveTo(x, points[i]);
-                else ctxWave.lineTo(x, points[i]);
-            }
-            ctxWave.stroke();
-        }
+canvas.width = canvas.offsetWidth;
+canvas.height = 80;
 
-        async function initSensor() {
-            if (scanning) return;
-            const statusText = document.getElementById('status-text');
-            const video = document.getElementById('video');
-            const btn = document.getElementById('camera-btn');
+let signalBuffer = [];
+let timeBuffer = [];
+const MAX_SAMPLES = 300;   // ~10 seconds of data
 
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 320 } },
-                    audio: false
-                });
-                video.srcObject = stream;
-                btn.style.display = "none";
-                scanning = true;
+function robustGreenAverage(pixels) {
+    let greens = [];
+    for (let i = 1; i < pixels.length; i += 4) {
+        greens.push(pixels[i]);
+    }
 
-                const track = stream.getVideoTracks()[0];
-                const capabilities = track.getCapabilities();
-                if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
+    greens.sort((a, b) => a - b);
+    const trim = Math.floor(greens.length * 0.1);
+    const trimmed = greens.slice(trim, greens.length - trim);
 
-                const procCanvas = document.createElement('canvas');
-                const procCtx = procCanvas.getContext('2d', { alpha: false });
-                procCanvas.width = 32; procCanvas.height = 32;
+    return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+}
 
-                const startTime = Date.now();
-                const duration = 60000;
+function pushSignal(value) {
+    const now = performance.now() / 1000;
 
-                function process() {
-                    if (!scanning) return;
-                    const elapsed = Date.now() - startTime;
-                    const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
+    signalBuffer.push(value);
+    timeBuffer.push(now);
 
-                    procCtx.drawImage(video, 0, 0, 32, 32);
-                    const pixels = procCtx.getImageData(0, 0, 32, 32).data;
-                    let greenSum = 0;
-                    for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
-                    const avgGreen = greenSum / 1024;
+    if (signalBuffer.length > MAX_SAMPLES) {
+        signalBuffer.shift();
+        timeBuffer.shift();
+    }
+}
 
-                    drawWave(avgGreen);
+function detrend(signal) {
+    const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+    return signal.map(v => v - mean);
+}
 
-                    if (elapsed < duration) {
-                        statusText.innerHTML = `💓 <b>Reading Pulse:</b> ${remaining}s remaining...`;
-                        requestAnimationFrame(process);
-                    } else {
-                        scanning = false;
-                        track.stop();
-                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
-                        window.parent.postMessage({
-                            type: 'streamlit:setComponentValue',
-                            value: { hr: 72, hrv: 58, status: 'done' }
-                        }, '*');
-                    }
-                }
-                video.onplay = () => process();
-            } catch (err) {
-                statusText.innerHTML = "❌ Error: Camera Access Required";
+function simpleFilter(signal) {
+    let filtered = [];
+    let prev = 0;
+
+    for (let i = 0; i < signal.length; i++) {
+        let hp = signal[i] - (signal[i - 1] || signal[i]);
+        let smoothed = prev + 0.15 * (hp - prev);
+        filtered.push(smoothed);
+        prev = smoothed;
+    }
+    return filtered;
+}
+
+function detectPeaks(signal, times) {
+    let peaks = [];
+    if (signal.length < 5) return peaks;
+
+    const maxVal = Math.max(...signal);
+    const threshold = maxVal * 0.6;
+
+    for (let i = 1; i < signal.length - 1; i++) {
+        if (
+            signal[i] > threshold &&
+            signal[i] > signal[i - 1] &&
+            signal[i] > signal[i + 1]
+        ) {
+            if (!peaks.length || (times[i] - peaks[peaks.length - 1]) > 0.3) {
+                peaks.push(times[i]);
             }
         }
-        </script>
+    }
+    return peaks;
+}
+
+function computeIBI(peaks) {
+    let ibi = [];
+    for (let i = 1; i < peaks.length; i++) {
+        ibi.push(peaks[i] - peaks[i - 1]);
+    }
+    return ibi;
+}
+
+function computeHR(ibi) {
+    if (!ibi.length) return 0;
+    const sorted = [...ibi].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    return 60 / median;
+}
+
+function variabilityIndex(ibi) {
+    if (ibi.length < 2) return 0;
+
+    let diffs = [];
+    for (let i = 1; i < ibi.length; i++) {
+        diffs.push(Math.pow(ibi[i] - ibi[i - 1], 2));
+    }
+
+    return Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length);
+}
+
+function signalQuality(filtered, ibi) {
+    const amplitude = Math.max(...filtered) - Math.min(...filtered);
+
+    if (amplitude < 1.5) return "poor";
+    if (ibi.length < 3) return "unstable";
+
+    const mean = ibi.reduce((a, b) => a + b, 0) / ibi.length;
+    const variance = ibi.reduce((a, b) => a + Math.pow(b - mean, 2), 0);
+
+    if (variance > 0.15) return "noisy";
+
+    return "good";
+}
+
+function drawWave(value) {
+    ctxWave.clearRect(0, 0, canvas.width, canvas.height);
+    ctxWave.strokeStyle = '#00ff00';
+    ctxWave.lineWidth = 2;
+    ctxWave.beginPath();
+
+    const y = 40 - value * 8;
+
+    if (!drawWave.points) {
+        drawWave.points = new Array(100).fill(y);
+    }
+
+    drawWave.points.push(y);
+    drawWave.points.shift();
+
+    for (let i = 0; i < drawWave.points.length; i++) {
+        const x = i * (canvas.width / 100);
+        if (i === 0) ctxWave.moveTo(x, drawWave.points[i]);
+        else ctxWave.lineTo(x, drawWave.points[i]);
+    }
+
+    ctxWave.stroke();
+}
+
+async function initSensor() {
+    if (scanning) return;
+
+    const statusText = document.getElementById('status-text');
+    const video = document.getElementById('video');
+    const btn = document.getElementById('camera-btn');
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment" },
+            audio: false
+        });
+
+        const track = stream.getVideoTracks()[0];
+        const capabilities = track.getCapabilities();
+        if (capabilities.torch) {
+            await track.applyConstraints({ advanced: [{ torch: true }] });
+        }
+
+        video.srcObject = stream;
+        btn.style.display = "none";
+        scanning = true;
+
+        const procCanvas = document.createElement('canvas');
+        const procCtx = procCanvas.getContext('2d', { alpha: false });
+        procCanvas.width = 32;
+        procCanvas.height = 32;
+
+        const startTime = performance.now();
+        const duration = 20000;   // shorter but stable demo
+
+        function process() {
+            if (!scanning) return;
+
+            const elapsed = performance.now() - startTime;
+            const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
+
+            procCtx.drawImage(video, 0, 0, 32, 32);
+            const pixels = procCtx.getImageData(0, 0, 32, 32).data;
+
+            const avgGreen = robustGreenAverage(pixels);
+            pushSignal(avgGreen);
+
+            const detrended = detrend(signalBuffer);
+            const filtered = simpleFilter(detrended);
+
+            drawWave(filtered[filtered.length - 1] || 0);
+
+            if (elapsed < duration) {
+                statusText.innerHTML = `💓 <b>Scanning:</b> ${remaining}s`;
+                requestAnimationFrame(process);
+            } else {
+                scanning = false;
+                track.stop();
+
+                const detrendedFinal = detrend(signalBuffer);
+                const filteredFinal = simpleFilter(detrendedFinal);
+
+                const peaks = detectPeaks(filteredFinal, timeBuffer);
+                const ibi = computeIBI(peaks);
+
+                const hr = computeHR(ibi);
+                const pvi = variabilityIndex(ibi);
+                const quality = signalQuality(filteredFinal, ibi);
+
+                statusText.innerHTML = `✅ HR: ${hr.toFixed(0)} | PVI: ${pvi.toFixed(2)} (${quality})`;
+
+                window.parent.postMessage({
+                    type: 'streamlit:setComponentValue',
+                    value: { hr: Math.round(hr), hrv: pvi, quality: quality }
+                }, '*');
+            }
+        }
+
+        video.onplay = () => process();
+
+    } catch (err) {
+        statusText.innerHTML = "❌ Camera access required";
+    }
+}
+</script>
         """,
         height=220,
     )
@@ -304,3 +438,4 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
