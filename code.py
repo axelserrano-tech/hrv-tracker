@@ -405,7 +405,7 @@ with st.sidebar:
         hrv_sensor_component()
         # --- FEATURE PREVIEW: PPG FLASH SCAN ---
         st.info("💡 **PPG Flash Scan (Mock):** Based on research, place your finger over the camera and flash for a 60-second scan.")
-          if st.button("🚀 Start Pulse Scan"):
+        if st.button("🚀 Start Pulse Scan"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             chart_placeholder = st.empty()
@@ -509,10 +509,3 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
-
-
-
-
-
-
-
