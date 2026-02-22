@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 def hrv_sensor_component():
     components.html(
         """
-        <div style="background: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #d1d5db;">
+        <div style="background: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #d1d5db; font-family: sans-serif; height: 280px; overflow: hidden;">
             <p id="status-text" style="font-family: sans-serif;">📊 <b>Hardware:</b> Ready</p>
             <canvas id="waveCanvas" width="300" height="60" style="background: #000; border-radius: 5px; margin-bottom: 10px;"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
@@ -259,4 +259,5 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
