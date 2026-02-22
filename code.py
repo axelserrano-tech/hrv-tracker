@@ -9,21 +9,49 @@ import streamlit.components.v1 as components
 
 # This function creates the "Bridge"
 def hrv_sensor_component():
-    # We use an iframe to run the JS sensor
     components.html(
         """
-        <div style="background: #f0f2f6; padding: 10px; border-radius: 10px;">
-            <p>📊 <b>Hardware Status:</b> Waiting for Camera...</p>
-            <button onclick="initSensor()" style="padding: 10px; background: #ff4b4b; color: white; border: none; border-radius: 5px;">
+        <div style="background: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #d1d5db;">
+            <p id="status-text">📊 <b>Hardware Status:</b> Ready</p>
+            <video id="video" autoplay playsinline style="display:none;"></video>
+            <button id="camera-btn" onclick="initSensor()" style="padding: 10px 20px; background: #ff4b4b; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
                 Enable Camera & Flash
             </button>
         </div>
 
         <script>
         async function initSensor() {
-            // This is where your JS logic lives
-            alert("Camera Access Requested for PPG Scan");
-            // In the next step, we will add the pulse-detection math here
+            const statusText = document.getElementById('status-text');
+            const video = document.getElementById('video');
+            const btn = document.getElementById('camera-btn');
+
+            try {
+                // 1. Request Camera Access
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" }, // Back camera
+                    audio: false
+                });
+                
+                video.srcObject = stream;
+                statusText.innerHTML = "🔦 <b>Flash Active:</b> Cover lens with finger";
+                btn.style.display = "none";
+
+                // 2. Activate Flash (Torch)
+                const track = stream.getVideoTracks()[0];
+                const capabilities = track.getCapabilities();
+                
+                if (capabilities.torch) {
+                    await track.applyConstraints({
+                        advanced: [{ torch: true }]
+                    });
+                } else {
+                    alert("Flash not detected. Please ensure you are on a mobile device.");
+                }
+
+            } catch (err) {
+                console.error(err);
+                statusText.innerHTML = "❌ <b>Error:</b> Camera access denied.";
+            }
         }
         </script>
         """,
