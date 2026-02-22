@@ -10,10 +10,6 @@ import streamlit.components.v1 as components
 # This function creates the "Bridge"
 # This function creates the "Bridge" - UPDATED FOR FIX
 def hrv_sensor_component():
-    return components.html(
-        """ YOUR HTML / JS """,
-        height=220,
-    )
     components.html(
         """
         <style>
@@ -513,6 +509,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
