@@ -60,7 +60,7 @@ def hrv_sensor_component():
             </button>
         </div>
 
-      <script>
+     <script>
 let scanning = false;
 
 const canvas = document.getElementById('waveCanvas');
@@ -71,19 +71,17 @@ canvas.height = 80;
 
 let signalBuffer = [];
 let timeBuffer = [];
-const MAX_SAMPLES = 300;   // ~10 seconds of data
+const MAX_SAMPLES = 300;
 
 function robustGreenAverage(pixels) {
     let greens = [];
-    for (let i = 1; i < pixels.length; i += 4) {
-        greens.push(pixels[i]);
-    }
+    for (let i = 1; i < pixels.length; i += 4) greens.push(pixels[i]);
 
-    greens.sort((a, b) => a - b);
+    greens.sort((a,b)=>a-b);
     const trim = Math.floor(greens.length * 0.1);
     const trimmed = greens.slice(trim, greens.length - trim);
 
-    return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+    return trimmed.reduce((a,b)=>a+b,0) / trimmed.length;
 }
 
 function pushSignal(value) {
@@ -99,7 +97,7 @@ function pushSignal(value) {
 }
 
 function detrend(signal) {
-    const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+    const mean = signal.reduce((a,b)=>a+b,0) / signal.length;
     return signal.map(v => v - mean);
 }
 
@@ -108,7 +106,7 @@ function simpleFilter(signal) {
     let prev = 0;
 
     for (let i = 0; i < signal.length; i++) {
-        let hp = signal[i] - (signal[i - 1] || signal[i]);
+        let hp = signal[i] - (signal[i-1] || signal[i]);
         let smoothed = prev + 0.15 * (hp - prev);
         filtered.push(smoothed);
         prev = smoothed;
@@ -124,14 +122,12 @@ function detectPeaks(signal, times) {
     const threshold = maxVal * 0.6;
 
     for (let i = 1; i < signal.length - 1; i++) {
-        if (
-            signal[i] > threshold &&
-            signal[i] > signal[i - 1] &&
-            signal[i] > signal[i + 1]
-        ) {
-            if (!peaks.length || (times[i] - peaks[peaks.length - 1]) > 0.3) {
+        if (signal[i] > threshold &&
+            signal[i] > signal[i-1] &&
+            signal[i] > signal[i+1]) {
+
+            if (!peaks.length || (times[i] - peaks[peaks.length-1]) > 0.3)
                 peaks.push(times[i]);
-            }
         }
     }
     return peaks;
@@ -139,16 +135,15 @@ function detectPeaks(signal, times) {
 
 function computeIBI(peaks) {
     let ibi = [];
-    for (let i = 1; i < peaks.length; i++) {
-        ibi.push(peaks[i] - peaks[i - 1]);
-    }
+    for (let i = 1; i < peaks.length; i++)
+        ibi.push(peaks[i] - peaks[i-1]);
     return ibi;
 }
 
 function computeHR(ibi) {
     if (!ibi.length) return 0;
-    const sorted = [...ibi].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
+    const sorted = [...ibi].sort((a,b)=>a-b);
+    const median = sorted[Math.floor(sorted.length/2)];
     return 60 / median;
 }
 
@@ -156,11 +151,10 @@ function variabilityIndex(ibi) {
     if (ibi.length < 2) return 0;
 
     let diffs = [];
-    for (let i = 1; i < ibi.length; i++) {
-        diffs.push(Math.pow(ibi[i] - ibi[i - 1], 2));
-    }
+    for (let i = 1; i < ibi.length; i++)
+        diffs.push((ibi[i] - ibi[i-1]) ** 2);
 
-    return Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length);
+    return Math.sqrt(diffs.reduce((a,b)=>a+b,0) / diffs.length);
 }
 
 function signalQuality(filtered, ibi) {
@@ -169,25 +163,23 @@ function signalQuality(filtered, ibi) {
     if (amplitude < 1.5) return "poor";
     if (ibi.length < 3) return "unstable";
 
-    const mean = ibi.reduce((a, b) => a + b, 0) / ibi.length;
-    const variance = ibi.reduce((a, b) => a + Math.pow(b - mean, 2), 0);
+    const mean = ibi.reduce((a,b)=>a+b,0) / ibi.length;
+    const variance = ibi.reduce((a,b)=>a+(b-mean)**2,0);
 
     if (variance > 0.15) return "noisy";
-
     return "good";
 }
 
 function drawWave(value) {
-    ctxWave.clearRect(0, 0, canvas.width, canvas.height);
+    ctxWave.clearRect(0,0,canvas.width,canvas.height);
     ctxWave.strokeStyle = '#00ff00';
     ctxWave.lineWidth = 2;
     ctxWave.beginPath();
 
     const y = 40 - value * 8;
 
-    if (!drawWave.points) {
+    if (!drawWave.points)
         drawWave.points = new Array(100).fill(y);
-    }
 
     drawWave.points.push(y);
     drawWave.points.shift();
@@ -216,49 +208,44 @@ async function initSensor() {
 
         const track = stream.getVideoTracks()[0];
         const capabilities = track.getCapabilities();
-        if (capabilities.torch) {
+        if (capabilities.torch)
             await track.applyConstraints({ advanced: [{ torch: true }] });
-        }
 
         video.srcObject = stream;
         btn.style.display = "none";
         scanning = true;
 
         const procCanvas = document.createElement('canvas');
-        const procCtx = procCanvas.getContext('2d', { alpha: false });
+        const procCtx = procCanvas.getContext('2d');
         procCanvas.width = 32;
         procCanvas.height = 32;
 
         const startTime = performance.now();
-        const duration = 20000;   // shorter but stable demo
+        const duration = 20000;
 
         function process() {
             if (!scanning) return;
 
             const elapsed = performance.now() - startTime;
-            const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
+            const remaining = Math.max(0, Math.ceil((duration - elapsed)/1000));
 
             procCtx.drawImage(video, 0, 0, 32, 32);
-            const pixels = procCtx.getImageData(0, 0, 32, 32).data;
+            const pixels = procCtx.getImageData(0,0,32,32).data;
 
             const avgGreen = robustGreenAverage(pixels);
             pushSignal(avgGreen);
 
-            const detrended = detrend(signalBuffer);
-            const filtered = simpleFilter(detrended);
-
+            const filtered = simpleFilter(detrend(signalBuffer));
             drawWave(filtered[filtered.length - 1] || 0);
 
             if (elapsed < duration) {
-                statusText.innerHTML = `💓 <b>Scanning:</b> ${remaining}s`;
+                statusText.innerHTML = `💓 Scanning: ${remaining}s`;
                 requestAnimationFrame(process);
             } else {
                 scanning = false;
                 track.stop();
 
-                const detrendedFinal = detrend(signalBuffer);
-                const filteredFinal = simpleFilter(detrendedFinal);
-
+                const filteredFinal = simpleFilter(detrend(signalBuffer));
                 const peaks = detectPeaks(filteredFinal, timeBuffer);
                 const ibi = computeIBI(peaks);
 
@@ -266,7 +253,8 @@ async function initSensor() {
                 const pvi = variabilityIndex(ibi);
                 const quality = signalQuality(filteredFinal, ibi);
 
-                statusText.innerHTML = `✅ HR: ${hr.toFixed(0)} | PVI: ${pvi.toFixed(2)} (${quality})`;
+                statusText.innerHTML =
+                    `✅ HR: ${hr.toFixed(0)} | PVI: ${pvi.toFixed(2)} (${quality})`;
 
                 window.parent.postMessage({
                     type: 'streamlit:setComponentValue',
@@ -438,4 +426,5 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
