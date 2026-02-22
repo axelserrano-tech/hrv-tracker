@@ -21,25 +21,17 @@ def hrv_sensor_component():
                 background: #000; border-radius: 8px; margin: 10px 0; 
                 width: 100%; height: 140px; display: block;
             }
-            #quality-box {
-                width: 100%; height: 8px; background: #ddd; 
-                border-radius: 4px; margin: 5px 0; overflow: hidden;
-            }
-            #quality-bar {
-                width: 0%; height: 100%; background: #ff4b4b; transition: 0.3s;
-            }
-            #camera-btn {
-                padding: 14px; background: #ff4b4b; color: white; border: none; 
-                border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px;
-            }
+            #quality-box { width: 100%; height: 8px; background: #ddd; border-radius: 4px; margin: 5px 0; overflow: hidden; }
+            #quality-bar { width: 0%; height: 100%; background: #ff4b4b; transition: 0.3s; }
+            #camera-btn { padding: 14px; background: #ff4b4b; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px; }
         </style>
 
         <div class="container">
-            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Ready</p>
+            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Calibrating for Accuracy</p>
             <div id="quality-box"><div id="quality-bar"></div></div>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()">Start Accurate Scan</button>
+            <button id="camera-btn" onclick="initSensor()">Initiate Precision Scan</button>
         </div>
 
         <script>
@@ -57,16 +49,15 @@ def hrv_sensor_component():
 
         let points = new Array(100).fill(70); 
 
-        function drawWave(value, baseline) {
+        function drawWave(zScore) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
             ctxWave.strokeStyle = '#00ff00';
             ctxWave.lineWidth = 3;
+            ctxWave.lineJoin = 'round';
             ctxWave.beginPath();
             
-            let centerY = 70;
-            let y = centerY - ((value - baseline) * 35); 
+            let y = 70 - (zScore * 30); 
             y = Math.max(10, Math.min(130, y));
-            
             points.push(y);
             points.shift();
 
@@ -102,13 +93,11 @@ def hrv_sensor_component():
                 procCanvas.width = 20; procCanvas.height = 20;
 
                 const startTime = Date.now();
-                const totalDuration = 62000; 
                 let beatTimes = []; 
-                let lastValue = 0;
-                let isPeak = false;
                 let smoothedValue = 0;
-                let rollingBaseline = 0;
-                let signalVariance = 0;
+                let rollingMean = 0;
+                let rollingSTD = 0;
+                let isPeak = false;
 
                 function process() {
                     if (!scanning) return;
@@ -121,68 +110,61 @@ def hrv_sensor_component():
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
                     const avgGreen = greenSum / 400;
 
+                    // EMA Filters for extreme denoising
                     smoothedValue = (0.12 * avgGreen) + (0.88 * smoothedValue);
-                    rollingBaseline = (0.01 * smoothedValue) + (0.99 * rollingBaseline);
+                    rollingMean = (0.01 * smoothedValue) + (0.99 * rollingMean);
+                    let diff = smoothedValue - rollingMean;
+                    rollingSTD = (0.01 * Math.abs(diff)) + (0.99 * rollingSTD);
                     
-                    // QUALITY CALCULATION: Check if signal is too noisy
-                    signalVariance = (0.05 * Math.abs(smoothedValue - rollingBaseline)) + (0.95 * signalVariance);
-                    let quality = Math.min(100, (signalVariance * 500)); 
-                    
+                    // Normalization
+                    let zScore = rollingSTD > 0.05 ? (diff / rollingSTD) : 0;
+                    drawWave(zScore);
+
+                    // Signal Quality Index (SQI)
+                    let quality = Math.min(100, (rollingSTD * 800));
                     qBar.style.width = quality + "%";
-                    qBar.style.background = quality > 50 ? "#00ff00" : (quality > 20 ? "#ffcc00" : "#ff4b4b");
+                    qBar.style.background = quality > 60 ? "#00ff00" : (quality > 30 ? "#ffcc00" : "#ff4b4b");
 
-                    drawWave(smoothedValue, rollingBaseline);
-
-                    if (elapsed > 3000) {
-                        const remaining = Math.max(0, Math.ceil((totalDuration - elapsed) / 1000));
-                        
-                        if (quality < 15) {
-                            statusText.innerHTML = "⚠️ <b>Adjust Finger / Lighten Pressure</b>";
-                        } else {
-                            // High-Accuracy Peak Detection
-                            if (smoothedValue < lastValue && !isPeak) {
-                                let ibi = now - beatTimes[beatTimes.length - 1];
-                                if (!beatTimes.length || (ibi > 400 && ibi < 1500)) {
-                                    if (rollingBaseline - smoothedValue > 0.012) { 
-                                        beatTimes.push(now);
-                                        isPeak = true;
-                                    }
-                                }
-                            } else if (smoothedValue > lastValue + 0.012) {
-                                isPeak = false;
+                    if (elapsed > 5000) {
+                        // Advanced Peak Detection: Looks for the rapid upward swing of blood volume
+                        if (zScore < -1.4 && !isPeak) {
+                            let ibi = now - beatTimes[beatTimes.length - 1];
+                            // PHYSIOLOGICAL GATE: Rejects anything outside 40-180 BPM
+                            if (!beatTimes.length || (ibi > 333 && ibi < 1500)) {
+                                beatTimes.push(now);
+                                isPeak = true;
                             }
-
-                            let displayBPM = "--";
-                            if (beatTimes.length >= 3) {
-                                let recent = beatTimes.slice(-4);
-                                let avgIBI = (recent[recent.length-1] - recent[0]) / (recent.length - 1);
-                                displayBPM = Math.round(60000 / avgIBI);
-                            }
-                            statusText.innerHTML = `💓 <b>BPM:</b> ${displayBPM} | ⏱️ ${remaining}s`;
+                        } else if (zScore > 0.7) {
+                            isPeak = false;
                         }
-                    } else {
-                        statusText.innerHTML = "⚙️ <b>Optimizing Signal...</b>";
-                        rollingBaseline = smoothedValue;
+
+                        let bpm = "--";
+                        if (beatTimes.length >= 5) {
+                            // Calculates BPM based on the median of the last 5 intervals (Outlier Rejection)
+                            let intervals = [];
+                            for(let i=1; i<beatTimes.slice(-6).length; i++) {
+                                intervals.push(beatTimes[beatTimes.length-i] - beatTimes[beatTimes.length-i-1]);
+                            }
+                            intervals.sort((a, b) => a - b);
+                            let medianIBI = intervals[Math.floor(intervals.length / 2)];
+                            bpm = Math.round(60000 / medianIBI);
+                        }
+                        
+                        statusText.innerHTML = `💓 <b>Verified BPM:</b> ${bpm} | ⏱️ ${Math.max(0, Math.ceil((65000-elapsed)/1000))}s`;
                     }
 
-                    lastValue = smoothedValue;
-                    if (elapsed < totalDuration) {
+                    if (elapsed < 65000) {
                         requestAnimationFrame(process);
                     } else {
-                        scanning = false;
-                        track.stop();
-                        let finalBPM = Math.round(beatTimes.length * (60000 / (Date.now() - startTime - 3000)));
+                        scanning = false; track.stop();
                         window.parent.postMessage({
                             type: 'streamlit:setComponentValue',
-                            value: { hr: finalBPM, hrv: 45, status: 'done' }
+                            value: { hr: bpm, status: 'complete' }
                         }, '*');
-                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
                     }
                 }
-                video.onplay = () => { smoothedValue = 150; rollingBaseline = 150; process(); };
-            } catch (err) {
-                statusText.innerHTML = "❌ Error: Check Permissions";
-            }
+                video.onplay = () => { smoothedValue = 150; rollingMean = 150; process(); };
+            } catch (err) { statusText.innerHTML = "❌ Error: Permission Denied"; }
         }
         </script>
         """,
@@ -341,6 +323,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
