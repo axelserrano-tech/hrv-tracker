@@ -6,8 +6,9 @@ from datetime import datetime
 import os
 import streamlit.components.v1 as components
 
-# --- 1. THE RESEARCH-GRADE SENSOR COMPONENT ---
+# --- 1. RESEARCH-GRADE SENSOR COMPONENT ---
 def hrv_sensor_component():
+    # We use a unique key for the component to prevent state collisions
     return components.html(
         """
         <style>
@@ -36,9 +37,7 @@ def hrv_sensor_component():
             <div class="label-sm" id="status">Ready for Precision Scan</div>
             <div class="bpm-main" id="bpm-val">--</div>
             <div class="label-sm">Beats Per Minute</div>
-            
             <div id="progress-bar"><div id="progress-fill"></div></div>
-            
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
             <button id="camera-btn" onclick="initSensor()">Start 60s Measurement</button>
@@ -56,10 +55,8 @@ def hrv_sensor_component():
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             waveData.push(signal);
             waveData.shift();
-
             let max = Math.max(...waveData.map(Math.abs)) || 0.1;
             let scale = (canvas.height / 2.3) / max;
-
             ctx.strokeStyle = '#00ff41';
             ctx.lineWidth = 3;
             ctx.shadowBlur = 10;
@@ -122,17 +119,13 @@ def hrv_sensor_component():
                             scanning = false; track.stop();
                             let rr = [];
                             for(let i=1; i<beatTimes.length; i++) rr.push(beatTimes[i] - beatTimes[i-1]);
-                            
-                            // Precision RMSSD Math
                             let diffsSq = [];
                             for(let i=1; i<rr.length; i++) diffsSq.push(Math.pow(rr[i] - rr[i-1], 2));
                             let rmssd = Math.sqrt(diffsSq.reduce((a,b)=>a+b, 0) / diffsSq.length);
                             let avgHR = Math.round(60000 / (rr.reduce((a,b)=>a+b, 0) / rr.length));
 
-                            window.parent.postMessage({
-                                type: 'streamlit:setComponentValue',
-                                value: { hr: avgHR, hrv: Math.round(rmssd) }
-                            }, '*');
+                            // Send data back to Streamlit
+                            Streamlit.setComponentValue({ hr: avgHR, hrv: Math.round(rmssd) });
                             return;
                         }
                     }
@@ -147,11 +140,12 @@ def hrv_sensor_component():
                     requestAnimationFrame(process);
                 }
                 process();
-            } catch (e) { document.getElementById('status').innerText = "Hardware Access Denied"; }
+            } catch (e) { document.getElementById('status').innerText = "Hardware Error"; }
         }
         </script>
         """,
         height=450,
+        key="hrv_sensor"
     )
 
 # --- 2. DATA ENGINE ---
@@ -167,8 +161,17 @@ def load_data():
 # --- 3. SESSION & LOGIN ---
 st.set_page_config(page_title="Kubios-Grade HRV", layout="wide")
 
+# Ensure all keys exist in session state to prevent AttributeErrors
 if 'auth' not in st.session_state:
-    st.session_state.update({'auth': False, 'user': None, 'role': None, 'detected_hr': 70, 'detected_hrv': 50})
+    st.session_state.auth = False
+if 'user' not in st.session_state:
+    st.session_state.user = None
+if 'role' not in st.session_state:
+    st.session_state.role = None
+if 'detected_hr' not in st.session_state:
+    st.session_state.detected_hr = 70
+if 'detected_hrv' not in st.session_state:
+    st.session_state.detected_hrv = 50
 
 if not st.session_state.auth:
     st.title("🔐 Access Portal")
@@ -177,10 +180,10 @@ if not st.session_state.auth:
         p = st.text_input("Password", type="password")
         if st.form_submit_button("Login"):
             if u.lower() == "admin" and p == "ryan2026":
-                st.session_state.update({'auth': True, 'role': 'admin', 'user': 'Michael Ryan'})
+                st.session_state.auth, st.session_state.role, st.session_state.user = True, "admin", "Michael Ryan"
                 st.rerun()
             elif u and p == "student123":
-                st.session_state.update({'auth': True, 'role': 'student', 'user': u})
+                st.session_state.auth, st.session_state.role, st.session_state.user = True, "student", u
                 st.rerun()
             else: st.error("Invalid credentials.")
     st.stop()
@@ -200,18 +203,20 @@ if st.session_state.role == "student":
     
     with col_l:
         st.header("Step 1: Measurement")
+        # Run the component and catch its output safely
         sensor_data = hrv_sensor_component()
         
-        # FIX: The null-check that prevents your error
-        if sensor_data is not None:
+        # This is the safe way to update session state without crashing
+        if isinstance(sensor_data, dict):
             st.session_state.detected_hr = sensor_data.get('hr', 70)
             st.session_state.detected_hrv = sensor_data.get('hrv', 50)
-            st.success(f"Scan Finished: {st.session_state.detected_hr} BPM / {st.session_state.detected_hrv}ms RMSSD")
+            st.success("✅ Signal Captured!")
 
+        # Form uses session_state values as defaults
         with st.form("data_entry", clear_on_submit=True):
             st.subheader("Step 2: Sync Data")
-            final_hr = st.number_input("Heart Rate", 40, 180, int(st.session_state.detected_hr))
-            final_hrv = st.number_input("HRV (RMSSD)", 5, 250, int(st.session_state.detected_hrv))
+            final_hr = st.number_input("Heart Rate", 40, 180, value=int(st.session_state.detected_hr))
+            final_hrv = st.number_input("HRV (RMSSD)", 5, 250, value=int(st.session_state.detected_hrv))
             s_val = st.slider("Soreness Level", 1, 10, 1)
             
             if st.form_submit_button("Submit to Dashboard"):
@@ -238,8 +243,9 @@ if st.session_state.role == "student":
             
             st.metric("Latest HRV", f"{latest} ms", f"{round(latest-avg, 1)} from avg")
             
-            fig = go.Figure(go.Scatter(x=u_df['Timestamp'], y=u_df['RMSSD'], mode='lines+markers', name='HRV'))
+            fig = go.Figure(go.Scatter(x=u_df['Timestamp'], y=u_df['RMSSD'], mode='lines+markers', name='HRV Trend'))
             fig.add_hline(y=avg, line_dash="dash", line_color="gray", annotation_text="Baseline")
+            fig.update_layout(template="plotly_dark", margin=dict(l=20, r=20, t=20, b=20))
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Complete your first 60s scan to see your recovery baseline.")
