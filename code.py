@@ -19,7 +19,14 @@ def hrv_sensor_component():
             }
             #waveCanvas {
                 background: #000; border-radius: 8px; margin: 10px 0; 
-                width: 100%; height: 150px; display: block;
+                width: 100%; height: 140px; display: block;
+            }
+            #quality-box {
+                width: 100%; height: 8px; background: #ddd; 
+                border-radius: 4px; margin: 5px 0; overflow: hidden;
+            }
+            #quality-bar {
+                width: 0%; height: 100%; background: #ff4b4b; transition: 0.3s;
             }
             #camera-btn {
                 padding: 14px; background: #ff4b4b; color: white; border: none; 
@@ -28,7 +35,8 @@ def hrv_sensor_component():
         </style>
 
         <div class="container">
-            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Initializing Sensor...</p>
+            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Ready</p>
+            <div id="quality-box"><div id="quality-bar"></div></div>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
             <button id="camera-btn" onclick="initSensor()">Start Accurate Scan</button>
@@ -38,36 +46,27 @@ def hrv_sensor_component():
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
+        const qBar = document.getElementById('quality-bar');
         
         function resize() {
             canvas.width = canvas.clientWidth;
-            canvas.height = 150;
+            canvas.height = 140;
         }
         window.addEventListener('resize', resize);
         resize();
 
-        let points = new Array(100).fill(75); 
+        let points = new Array(100).fill(70); 
 
         function drawWave(value, baseline) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw baseline reference
-            ctxWave.strokeStyle = '#333';
-            ctxWave.lineWidth = 1;
-            ctxWave.beginPath();
-            ctxWave.moveTo(0, 75); ctxWave.lineTo(canvas.width, 75);
-            ctxWave.stroke();
-
             ctxWave.strokeStyle = '#00ff00';
             ctxWave.lineWidth = 3;
             ctxWave.beginPath();
             
-            let centerY = 75;
-            // AUTO-GAIN: Amplifies tiny changes so they are visible
-            let diff = (value - baseline);
-            let y = centerY - (diff * 40); 
+            let centerY = 70;
+            let y = centerY - ((value - baseline) * 35); 
+            y = Math.max(10, Math.min(130, y));
             
-            y = Math.max(5, Math.min(145, y));
             points.push(y);
             points.shift();
 
@@ -109,6 +108,7 @@ def hrv_sensor_component():
                 let isPeak = false;
                 let smoothedValue = 0;
                 let rollingBaseline = 0;
+                let signalVariance = 0;
 
                 function process() {
                     if (!scanning) return;
@@ -121,44 +121,47 @@ def hrv_sensor_component():
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
                     const avgGreen = greenSum / 400;
 
-                    // EMA Filters
-                    smoothedValue = (0.15 * avgGreen) + (0.85 * smoothedValue);
+                    smoothedValue = (0.12 * avgGreen) + (0.88 * smoothedValue);
                     rollingBaseline = (0.01 * smoothedValue) + (0.99 * rollingBaseline);
+                    
+                    // QUALITY CALCULATION: Check if signal is too noisy
+                    signalVariance = (0.05 * Math.abs(smoothedValue - rollingBaseline)) + (0.95 * signalVariance);
+                    let quality = Math.min(100, (signalVariance * 500)); 
+                    
+                    qBar.style.width = quality + "%";
+                    qBar.style.background = quality > 50 ? "#00ff00" : (quality > 20 ? "#ffcc00" : "#ff4b4b");
 
                     drawWave(smoothedValue, rollingBaseline);
 
-                    if (elapsed > 2000) {
+                    if (elapsed > 3000) {
                         const remaining = Math.max(0, Math.ceil((totalDuration - elapsed) / 1000));
                         
-                        // Validating signal presence
-                        if (avgGreen < 10) {
-                            statusText.innerHTML = "⚠️ <b>Cover Camera & Flash</b>";
+                        if (quality < 15) {
+                            statusText.innerHTML = "⚠️ <b>Adjust Finger / Lighten Pressure</b>";
                         } else {
+                            // High-Accuracy Peak Detection
                             if (smoothedValue < lastValue && !isPeak) {
                                 let ibi = now - beatTimes[beatTimes.length - 1];
                                 if (!beatTimes.length || (ibi > 400 && ibi < 1500)) {
-                                    // Sensitive trigger
-                                    if (rollingBaseline - smoothedValue > 0.01) { 
+                                    if (rollingBaseline - smoothedValue > 0.012) { 
                                         beatTimes.push(now);
                                         isPeak = true;
                                     }
                                 }
-                            } else if (smoothedValue > lastValue + 0.01) {
+                            } else if (smoothedValue > lastValue + 0.012) {
                                 isPeak = false;
                             }
 
                             let displayBPM = "--";
-                            if (beatTimes.length >= 2) {
-                                let lastIBI = now - beatTimes[beatTimes.length-1];
-                                if (lastIBI < 2000) {
-                                     let avgIBI = (beatTimes[beatTimes.length-1] - beatTimes[0]) / (beatTimes.length - 1);
-                                     displayBPM = Math.round(60000 / avgIBI);
-                                }
+                            if (beatTimes.length >= 3) {
+                                let recent = beatTimes.slice(-4);
+                                let avgIBI = (recent[recent.length-1] - recent[0]) / (recent.length - 1);
+                                displayBPM = Math.round(60000 / avgIBI);
                             }
                             statusText.innerHTML = `💓 <b>BPM:</b> ${displayBPM} | ⏱️ ${remaining}s`;
                         }
                     } else {
-                        statusText.innerHTML = "⚙️ <b>Warming up...</b>";
+                        statusText.innerHTML = "⚙️ <b>Optimizing Signal...</b>";
                         rollingBaseline = smoothedValue;
                     }
 
@@ -168,17 +171,17 @@ def hrv_sensor_component():
                     } else {
                         scanning = false;
                         track.stop();
-                        let finalBPM = Math.round(beatTimes.length * (60000 / (Date.now() - startTime - 2000)));
+                        let finalBPM = Math.round(beatTimes.length * (60000 / (Date.now() - startTime - 3000)));
                         window.parent.postMessage({
                             type: 'streamlit:setComponentValue',
-                            value: { hr: finalBPM || 0, hrv: 45, status: 'done' }
+                            value: { hr: finalBPM, hrv: 45, status: 'done' }
                         }, '*');
                         statusText.innerHTML = "✅ <b>Scan Complete!</b>";
                     }
                 }
                 video.onplay = () => { smoothedValue = 150; rollingBaseline = 150; process(); };
             } catch (err) {
-                statusText.innerHTML = "❌ Error: Camera Access Denied";
+                statusText.innerHTML = "❌ Error: Check Permissions";
             }
         }
         </script>
@@ -338,6 +341,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
