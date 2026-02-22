@@ -26,31 +26,52 @@ def hrv_sensor_component():
             const btn = document.getElementById('camera-btn');
 
             try {
-                // 1. Request Camera Access
+                // Request camera with specific dimensions for faster processing
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment" }, // Back camera
+                    video: { facingMode: "environment", width: 320, height: 240 },
                     audio: false
                 });
-                
                 video.srcObject = stream;
-                statusText.innerHTML = "🔦 <b>Flash Active:</b> Cover lens with finger";
                 btn.style.display = "none";
 
-                // 2. Activate Flash (Torch)
                 const track = stream.getVideoTracks()[0];
                 const capabilities = track.getCapabilities();
                 
                 if (capabilities.torch) {
-                    await track.applyConstraints({
-                        advanced: [{ torch: true }]
-                    });
-                } else {
-                    alert("Flash not detected. Please ensure you are on a mobile device.");
+                    await track.applyConstraints({ advanced: [{ torch: true }] });
                 }
 
+                // Create the Processor (Hidden Canvas)
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d', { alpha: false });
+                canvas.width = 32; 
+                canvas.height = 32;
+
+                function process() {
+                    if (video.paused || video.ended) return;
+                    
+                    ctx.drawImage(video, 0, 0, 32, 32);
+                    const pixels = ctx.getImageData(0, 0, 32, 32).data;
+                    
+                    let greenSum = 0;
+                    // Every 4th value in the array is a new pixel [R, G, B, A]
+                    // i=1 starts at the Green value of the first pixel
+                    for (let i = 1; i < pixels.length; i += 4) {
+                        greenSum += pixels[i];
+                    }
+                    const avgGreen = greenSum / (32 * 32);
+
+                    // For now, we log this to the browser console
+                    console.log("Green Intensity:", avgGreen);
+                    
+                    statusText.innerHTML = "💓 <b>Reading Pulse...</b> Keep your finger still.";
+                    requestAnimationFrame(process);
+                }
+                
+                video.onplay = () => process();
+
             } catch (err) {
-                console.error(err);
-                statusText.innerHTML = "❌ <b>Error:</b> Camera access denied.";
+                statusText.innerHTML = "❌ Hardware Error: " + err.message;
             }
         }
         </script>
