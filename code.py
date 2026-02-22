@@ -12,88 +12,99 @@ def hrv_sensor_component():
     components.html(
         """
         <div style="background: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #d1d5db;">
-            <p id="status-text">📊 <b>Hardware Status:</b> Ready</p>
+            <p id="status-text" style="font-family: sans-serif;">📊 <b>Hardware:</b> Ready</p>
+            <canvas id="waveCanvas" width="300" height="60" style="background: #000; border-radius: 5px; margin-bottom: 10px;"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()" style="padding: 10px 20px; background: #ff4b4b; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
+            <button id="camera-btn" onclick="initSensor()" style="padding: 10px 20px; background: #ff4b4b; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;">
                 Enable Camera & Flash
             </button>
         </div>
 
         <script>
-        let scanning = false; // Prevents multiple loops starting at once
+        let scanning = false;
+        const canvas = document.getElementById('waveCanvas');
+        const ctxWave = canvas.getContext('2d');
+        let points = new Array(100).fill(30); // Pre-fill wave points
+
+        function drawWave(value) {
+            ctxWave.clearRect(0, 0, canvas.width, canvas.height);
+            ctxWave.strokeStyle = '#00ff00'; // Medical Green
+            ctxWave.lineWidth = 2;
+            ctxWave.beginPath();
+            
+            // Normalize value for display (0-255 scale to 0-60 height)
+            let y = 60 - ((value - 100) * 1.5); 
+            points.push(y);
+            points.shift();
+
+            for (let i = 0; i < points.length; i++) {
+                let x = i * (300 / 100);
+                if (i === 0) ctxWave.moveTo(x, points[i]);
+                else ctxWave.lineTo(x, points[i]);
+            }
+            ctxWave.stroke();
+        }
 
         async function initSensor() {
             if (scanning) return;
-            
             const statusText = document.getElementById('status-text');
             const video = document.getElementById('video');
             const btn = document.getElementById('camera-btn');
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 320 }, height: { ideal: 240 } },
+                    video: { facingMode: "environment", width: 320 },
                     audio: false
                 });
-                
                 video.srcObject = stream;
                 btn.style.display = "none";
                 scanning = true;
 
                 const track = stream.getVideoTracks()[0];
                 const capabilities = track.getCapabilities();
-                if (capabilities.torch) {
-                    await track.applyConstraints({ advanced: [{ torch: true }] });
-                }
+                if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d', { alpha: false });
-                canvas.width = 32; canvas.height = 32;
+                const procCanvas = document.createElement('canvas');
+                const procCtx = procCanvas.getContext('2d', { alpha: false });
+                procCanvas.width = 32; procCanvas.height = 32;
 
-                let readings = [];
-                const duration = 60 * 1000; // 60 Seconds
                 const startTime = Date.now();
+                const duration = 60000;
 
                 function process() {
-                    if (!scanning) return; // KILL SWITCH
-
-                    const now = Date.now();
-                    const elapsed = now - startTime;
+                    if (!scanning) return;
+                    const elapsed = Date.now() - startTime;
                     const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
 
-                    ctx.drawImage(video, 0, 0, 32, 32);
-                    const pixels = ctx.getImageData(0, 0, 32, 32).data;
+                    procCtx.drawImage(video, 0, 0, 32, 32);
+                    const pixels = procCtx.getImageData(0, 0, 32, 32).data;
                     let greenSum = 0;
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
-                    readings.push(greenSum / 1024);
+                    const avgGreen = greenSum / 1024;
+
+                    drawWave(avgGreen);
 
                     if (elapsed < duration) {
                         statusText.innerHTML = `💓 <b>Reading Pulse:</b> ${remaining}s remaining...`;
                         requestAnimationFrame(process);
                     } else {
-                        // FINISHED
                         scanning = false;
-                        track.stop(); // Turn off Flash
-                        video.srcObject = null;
-                        statusText.innerHTML = "✅ <b>Scan Complete!</b> Syncing with form...";
-                        
-                        // Send a message back to Streamlit
+                        track.stop();
+                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
                         window.parent.postMessage({
                             type: 'streamlit:setComponentValue',
                             value: { hr: 72, hrv: 58, status: 'done' }
                         }, '*');
                     }
                 }
-                
                 video.onplay = () => process();
-
             } catch (err) {
                 statusText.innerHTML = "❌ Error: " + err.message;
-                scanning = false;
             }
         }
         </script>
         """,
-        height=150,
+        height=200,
     )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
