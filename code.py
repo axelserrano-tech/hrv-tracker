@@ -8,14 +8,54 @@ import time
 import streamlit.components.v1 as components
 
 # This function creates the "Bridge"
+# This function creates the "Bridge" - UPDATED FOR FIX
 def hrv_sensor_component():
     components.html(
         """
-        <div style="background: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #d1d5db;">
-            <p id="status-text" style="font-family: sans-serif;">📊 <b>Hardware:</b> Ready</p>
-            <canvas id="waveCanvas" width="300" height="60" style="background: #000; border-radius: 5px; margin-bottom: 10px;"></canvas>
+        <style>
+            .container {
+                background: #f0f2f6; 
+                padding: 15px; 
+                border-radius: 10px; 
+                text-align: center; 
+                border: 1px solid #d1d5db;
+                font-family: sans-serif;
+                /* Fix: Ensure container manages its children's width */
+                width: 100%;
+                box-sizing: border-box;
+                overflow: hidden;
+            }
+            #waveCanvas {
+                background: #000; 
+                border-radius: 5px; 
+                margin-bottom: 10px;
+                /* Fix: Make canvas responsive to sidebar width */
+                width: 100%;
+                height: 80px;
+                display: block;
+            }
+            #camera-btn {
+                padding: 12px; 
+                background: #ff4b4b; 
+                color: white; 
+                border: none; 
+                border-radius: 5px; 
+                cursor: pointer; 
+                font-weight: bold; 
+                width: 100%;
+                font-size: 14px;
+            }
+            #status-text {
+                font-size: 14px;
+                margin-bottom: 10px;
+            }
+        </style>
+
+        <div class="container">
+            <p id="status-text">📊 <b>Hardware:</b> Ready</p>
+            <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()" style="padding: 10px 20px; background: #ff4b4b; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%;">
+            <button id="camera-btn" onclick="initSensor()">
                 Enable Camera & Flash
             </button>
         </div>
@@ -24,21 +64,26 @@ def hrv_sensor_component():
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
-        let points = new Array(100).fill(30); // Pre-fill wave points
+        
+        // Fix: Set internal canvas resolution to match its displayed size
+        canvas.width = canvas.offsetWidth;
+        canvas.height = 80;
+        
+        let points = new Array(100).fill(40); 
 
         function drawWave(value) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
-            ctxWave.strokeStyle = '#00ff00'; // Medical Green
+            ctxWave.strokeStyle = '#00ff00';
             ctxWave.lineWidth = 2;
             ctxWave.beginPath();
             
-            // Normalize value for display (0-255 scale to 0-60 height)
-            let y = 60 - ((value - 100) * 1.5); 
+            // Normalize for 80px height
+            let y = 40 - ((value - 128) * 1.2); 
             points.push(y);
             points.shift();
 
             for (let i = 0; i < points.length; i++) {
-                let x = i * (300 / 100);
+                let x = i * (canvas.width / 100);
                 if (i === 0) ctxWave.moveTo(x, points[i]);
                 else ctxWave.lineTo(x, points[i]);
             }
@@ -53,7 +98,7 @@ def hrv_sensor_component():
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: 320 },
+                    video: { facingMode: "environment", width: { ideal: 320 } },
                     audio: false
                 });
                 video.srcObject = stream;
@@ -99,12 +144,12 @@ def hrv_sensor_component():
                 }
                 video.onplay = () => process();
             } catch (err) {
-                statusText.innerHTML = "❌ Error: " + err.message;
+                statusText.innerHTML = "❌ Error: Camera Access Required";
             }
         }
         </script>
         """,
-        height=200,
+        height=220,
     )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -259,3 +304,4 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
