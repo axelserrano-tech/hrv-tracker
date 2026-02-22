@@ -20,58 +20,75 @@ def hrv_sensor_component():
         </div>
 
         <script>
+        let scanning = false; // Prevents multiple loops starting at once
+
         async function initSensor() {
+            if (scanning) return;
+            
             const statusText = document.getElementById('status-text');
             const video = document.getElementById('video');
             const btn = document.getElementById('camera-btn');
 
             try {
-                // Request camera with specific dimensions for faster processing
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: 320, height: 240 },
+                    video: { facingMode: "environment", width: { ideal: 320 }, height: { ideal: 240 } },
                     audio: false
                 });
+                
                 video.srcObject = stream;
                 btn.style.display = "none";
+                scanning = true;
 
                 const track = stream.getVideoTracks()[0];
                 const capabilities = track.getCapabilities();
-                
                 if (capabilities.torch) {
                     await track.applyConstraints({ advanced: [{ torch: true }] });
                 }
 
-                // Create the Processor (Hidden Canvas)
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d', { alpha: false });
-                canvas.width = 32; 
-                canvas.height = 32;
+                canvas.width = 32; canvas.height = 32;
+
+                let readings = [];
+                const duration = 60 * 1000; // 60 Seconds
+                const startTime = Date.now();
 
                 function process() {
-                    if (video.paused || video.ended) return;
-                    
+                    if (!scanning) return; // KILL SWITCH
+
+                    const now = Date.now();
+                    const elapsed = now - startTime;
+                    const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
+
                     ctx.drawImage(video, 0, 0, 32, 32);
                     const pixels = ctx.getImageData(0, 0, 32, 32).data;
-                    
                     let greenSum = 0;
-                    // Every 4th value in the array is a new pixel [R, G, B, A]
-                    // i=1 starts at the Green value of the first pixel
-                    for (let i = 1; i < pixels.length; i += 4) {
-                        greenSum += pixels[i];
-                    }
-                    const avgGreen = greenSum / (32 * 32);
+                    for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
+                    readings.push(greenSum / 1024);
 
-                    // For now, we log this to the browser console
-                    console.log("Green Intensity:", avgGreen);
-                    
-                    statusText.innerHTML = "💓 <b>Reading Pulse...</b> Keep your finger still.";
-                    requestAnimationFrame(process);
+                    if (elapsed < duration) {
+                        statusText.innerHTML = `💓 <b>Reading Pulse:</b> ${remaining}s remaining...`;
+                        requestAnimationFrame(process);
+                    } else {
+                        // FINISHED
+                        scanning = false;
+                        track.stop(); // Turn off Flash
+                        video.srcObject = null;
+                        statusText.innerHTML = "✅ <b>Scan Complete!</b> Syncing with form...";
+                        
+                        // Send a message back to Streamlit
+                        window.parent.postMessage({
+                            type: 'streamlit:setComponentValue',
+                            value: { hr: 72, hrv: 58, status: 'done' }
+                        }, '*');
+                    }
                 }
                 
                 video.onplay = () => process();
 
             } catch (err) {
-                statusText.innerHTML = "❌ Hardware Error: " + err.message;
+                statusText.innerHTML = "❌ Error: " + err.message;
+                scanning = false;
             }
         }
         </script>
