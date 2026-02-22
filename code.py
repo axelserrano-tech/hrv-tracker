@@ -12,24 +12,41 @@ def hrv_sensor_component():
     return components.html(
         """
         <style>
+            * { box-sizing: border-box; }
+            body { margin: 0; padding: 0; }
             .container {
-                background: #f0f2f6; padding: 15px; border-radius: 15px; 
-                text-align: center; border: 1px solid #d1d5db; font-family: sans-serif;
-                width: 100%; max-width: 400px; margin: auto; box-sizing: border-box;
+                background: #f0f2f6; 
+                padding: 10px; 
+                border-radius: 15px; 
+                text-align: center; 
+                border: 1px solid #d1d5db; 
+                font-family: sans-serif;
+                width: 100%;
             }
             #waveCanvas {
-                background: #000; border-radius: 8px; margin: 10px 0; 
-                width: 100%; height: 120px; display: block;
+                background: #000; 
+                border-radius: 8px; 
+                margin: 10px 0; 
+                width: 100%; /* Force it to fill the width of your phone */
+                height: 140px; 
+                display: block;
             }
             #camera-btn {
-                padding: 14px; background: #ff4b4b; color: white; border: none; 
-                border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px;
+                padding: 14px; 
+                background: #ff4b4b; 
+                color: white; 
+                border: none; 
+                border-radius: 10px; 
+                cursor: pointer; 
+                font-weight: bold; 
+                width: 100%; 
+                font-size: 16px;
             }
         </style>
 
         <div class="container">
-            <p id="status-text" style="margin: 5px 0;">📊 <b>Hardware:</b> Ready</p>
-            <canvas id="waveCanvas" width="400" height="120"></canvas>
+            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📊 <b>Hardware:</b> Ready</p>
+            <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
             <button id="camera-btn" onclick="initSensor()">Enable Camera & Flash</button>
         </div>
@@ -38,21 +55,37 @@ def hrv_sensor_component():
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
-        let points = new Array(100).fill(60); 
+        
+        // Match drawing resolution to screen size
+        function resize() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = 140;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        let points = new Array(100).fill(70); 
 
         function drawWave(value, baseline) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
             ctxWave.strokeStyle = '#00ff00';
             ctxWave.lineWidth = 3;
+            ctxWave.lineJoin = 'round';
             ctxWave.beginPath();
             
-            // Auto-scale wave to fit the box based on the measured baseline
-            let y = 60 - ((value - baseline) * 10); 
+            // MATH FIX: Centers the wave in the middle of the 140px height box
+            let centerY = canvas.height / 2;
+            let sensitivity = 15; // Increase this if wave is too flat
+            let y = centerY - ((value - baseline) * sensitivity); 
+            
+            // Constrain Y to stay inside the black box
+            y = Math.max(10, Math.min(130, y));
+            
             points.push(y);
             points.shift();
 
             for (let i = 0; i < points.length; i++) {
-                let x = i * (canvas.width / 100);
+                let x = i * (canvas.width / 99);
                 if (i === 0) ctxWave.moveTo(x, points[i]);
                 else ctxWave.lineTo(x, points[i]);
             }
@@ -83,7 +116,7 @@ def hrv_sensor_component():
                 procCanvas.width = 32; procCanvas.height = 32;
 
                 const startTime = Date.now();
-                const totalDuration = 65000; // 5s calibration + 60s scan
+                const totalDuration = 65000; 
                 let beatTimes = []; 
                 let lastValue = 0;
                 let isPeak = false;
@@ -102,37 +135,33 @@ def hrv_sensor_component():
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
                     const avgGreen = greenSum / 1024;
 
-                    // Filter noise
-                    smoothedValue = (0.15 * avgGreen) + (0.85) * smoothedValue;
+                    smoothedValue = (0.2 * avgGreen) + (0.8 * smoothedValue);
 
-                    // --- PHASE 1: CALIBRATION (First 5 Seconds) ---
                     if (elapsed < 5000) {
                         calibrationSamples.push(smoothedValue);
                         baseline = calibrationSamples.reduce((a,b) => a+b, 0) / calibrationSamples.length;
-                        statusText.innerHTML = `⚙️ <b>Calibrating Pressure...</b> Keep Still`;
+                        statusText.innerHTML = `⚙️ <b>Calibrating...</b> Hold Steady`;
                         drawWave(smoothedValue, baseline);
                         requestAnimationFrame(process);
                         return;
                     }
 
-                    // --- PHASE 2: ACCURATE SCAN ---
                     const remaining = Math.max(0, Math.ceil((totalDuration - elapsed) / 1000));
                     drawWave(smoothedValue, baseline);
 
-                    // Improved Peak Detection based on the calibrated baseline
+                    // Refined Peak detection
                     if (smoothedValue < lastValue && !isPeak && (now - beatTimes[beatTimes.length-1] > 450 || !beatTimes.length)) {
-                        // Detect 2% drop from local baseline
-                        if (lastValue - smoothedValue > (baseline * 0.001)) {
+                        if (lastValue - smoothedValue > 0.02) { 
                             beatTimes.push(now);
                             isPeak = true;
                         }
-                    } else if (smoothedValue > lastValue + (baseline * 0.001)) {
+                    } else if (smoothedValue > lastValue + 0.02) {
                         isPeak = false;
                     }
                     lastValue = smoothedValue;
 
                     if (elapsed < totalDuration) {
-                        let currentBPM = beatTimes.length > 3 ? Math.round((beatTimes.length / ((elapsed-5000) / 60000))) : "--";
+                        let currentBPM = beatTimes.length > 2 ? Math.round((beatTimes.length / ((elapsed-5000) / 60000))) : "--";
                         statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
                         requestAnimationFrame(process);
                     } else {
@@ -144,7 +173,7 @@ def hrv_sensor_component():
                         let diffs = [];
                         for(let i = 1; i < rrIntervals.length; i++) { diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2)); }
                         let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 0;
-                        let finalHR = Math.round((beatTimes.length / 1)); // 60s scan = beats count
+                        let finalHR = Math.round(beatTimes.length); 
 
                         statusText.innerHTML = "✅ <b>Scan Complete!</b>";
                         window.parent.postMessage({
@@ -153,14 +182,14 @@ def hrv_sensor_component():
                         }, '*');
                     }
                 }
-                video.onplay = () => { smoothedValue = 128; process(); };
+                video.onplay = () => { smoothedValue = 150; process(); };
             } catch (err) {
                 statusText.innerHTML = "❌ Error: " + err.message;
             }
         }
         </script>
         """,
-        height=350,
+        height=400,
     )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -315,6 +344,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
