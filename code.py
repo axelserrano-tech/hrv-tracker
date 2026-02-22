@@ -13,57 +13,33 @@ def hrv_sensor_component():
         """
         <style>
             .container {
-                background: #f0f2f6; 
-                padding: 15px; 
-                border-radius: 15px; 
-                text-align: center; 
-                border: 1px solid #d1d5db; 
-                font-family: sans-serif;
-                max-width: 100%;
-                box-sizing: border-box;
+                background: #f0f2f6; padding: 15px; border-radius: 15px; 
+                text-align: center; border: 1px solid #d1d5db; font-family: sans-serif;
+                max-width: 100%; box-sizing: border-box;
             }
             #waveCanvas {
-                background: #000; 
-                border-radius: 8px; 
-                margin: 10px 0; 
-                width: 100%; /* This makes it fit any screen */
-                height: 120px;
-                display: block;
+                background: #000; border-radius: 8px; margin: 10px 0; 
+                width: 100%; height: 120px; display: block;
             }
             #camera-btn {
-                padding: 14px; 
-                background: #ff4b4b; 
-                color: white; 
-                border: none; 
-                border-radius: 10px; 
-                cursor: pointer; 
-                font-weight: bold; 
-                width: 100%; 
-                font-size: 16px;
+                padding: 14px; background: #ff4b4b; color: white; border: none; 
+                border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px;
             }
         </style>
 
         <div class="container">
             <p id="status-text" style="margin: 5px 0;">📊 <b>Hardware:</b> Ready</p>
-            
             <canvas id="waveCanvas"></canvas>
-            
             <video id="video" autoplay playsinline style="display:none;"></video>
-            
-            <button id="camera-btn" onclick="initSensor()">
-                Enable Camera & Flash
-            </button>
+            <button id="camera-btn" onclick="initSensor()">Enable Camera & Flash</button>
         </div>
 
         <script>
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
-        
-        // We need to set the internal resolution to match the display size
-        canvas.width = canvas.offsetWidth;
+        canvas.width = 300; 
         canvas.height = 120;
-        
         let points = new Array(100).fill(60); 
 
         function drawWave(value) {
@@ -71,11 +47,9 @@ def hrv_sensor_component():
             ctxWave.strokeStyle = '#00ff00';
             ctxWave.lineWidth = 3;
             ctxWave.beginPath();
-            
             let y = 60 - ((value - 128) * 1.5); 
             points.push(y);
             points.shift();
-
             for (let i = 0; i < points.length; i++) {
                 let x = i * (canvas.width / 100);
                 if (i === 0) ctxWave.moveTo(x, points[i]);
@@ -109,13 +83,9 @@ def hrv_sensor_component():
 
                 const startTime = Date.now();
                 const duration = 60000;
-
-                let readings = [];
-                let beatTimes = []; // To store timestamps of each heartbeat
+                let beatTimes = []; 
                 let lastValue = 0;
                 let isPeak = false;
-                const startTime = Date.now();
-                const duration = 60000;
 
                 function process() {
                     if (!scanning) return;
@@ -131,50 +101,41 @@ def hrv_sensor_component():
 
                     drawWave(avgGreen);
 
-                    // --- REAL-TIME PEAK DETECTION ---
-                    // We look for when the green intensity drops (blood volume increases)
                     if (lastValue > 0 && avgGreen < lastValue && !isPeak && avgGreen < 130) {
                         beatTimes.push(now);
-                        isPeak = true; // Lock until the wave goes back up
+                        isPeak = true;
                     } else if (avgGreen > lastValue + 1) {
-                        isPeak = false; // Reset lock
+                        isPeak = false;
                     }
                     lastValue = avgGreen;
 
                     if (elapsed < duration) {
-                        // Show real-time feedback of how many beats we've counted
-                        let currentBPM = beatTimes.length > 5 ? 
-                            Math.round((beatTimes.length / (elapsed / 60000))) : "--";
-                        
+                        let currentBPM = beatTimes.length > 5 ? Math.round((beatTimes.length / (elapsed / 60000))) : "--";
                         statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
                         requestAnimationFrame(process);
                     } else {
-                        // --- FINAL CALCULATIONS ---
                         scanning = false;
                         track.stop();
-
-                        // Calculate RMSSD from the beatTimes array
+                        
                         let rrIntervals = [];
-                        for(let i = 1; i < beatTimes.length; i++) {
-                            rrIntervals.push(beatTimes[i] - beatTimes[i-1]);
-                        }
-
-                        // Simple RMSSD Math: Root Mean Square of Successive Differences
+                        for(let i = 1; i < beatTimes.length; i++) { rrIntervals.push(beatTimes[i] - beatTimes[i-1]); }
                         let diffs = [];
-                        for(let i = 1; i < rrIntervals.length; i++) {
-                            diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2));
-                        }
+                        for(let i = 1; i < rrIntervals.length; i++) { diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2)); }
                         let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 50;
                         let finalHR = Math.round((beatTimes.length / (duration / 60000)));
 
                         statusText.innerHTML = "✅ <b>Scan Complete!</b>";
-                        
                         window.parent.postMessage({
                             type: 'streamlit:setComponentValue',
                             value: { hr: finalHR, hrv: Math.round(calculatedRMSSD), status: 'done' }
                         }, '*');
                     }
                 }
+                video.onplay = () => process();
+            } catch (err) {
+                statusText.innerHTML = "❌ Error: " + err.message;
+            }
+        }
         </script>
         """,
         height=350,
@@ -332,6 +293,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
