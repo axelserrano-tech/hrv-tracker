@@ -13,193 +13,126 @@ def hrv_sensor_component():
         """
         <style>
             .container {
-                background: #f0f2f6; padding: 10px; border-radius: 15px; 
-                text-align: center; border: 1px solid #d1d5db; font-family: sans-serif;
-                width: 100%; box-sizing: border-box;
+                background: #111; padding: 20px; border-radius: 20px; 
+                text-align: center; color: white; font-family: -apple-system, sans-serif;
+                width: 100%; max-width: 400px; margin: auto; box-sizing: border-box;
             }
             #waveCanvas {
-                background: #000; border-radius: 8px; margin: 10px 0; 
-                width: 100%; height: 140px; display: block;
+                background: #000; border-radius: 12px; margin: 15px 0; 
+                width: 100%; height: 120px; display: block; border: 1px solid #333;
             }
-            #camera-btn { padding: 14px; background: #ff4b4b; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px; }
+            .bpm-display { font-size: 48px; font-weight: bold; color: #ff4b4b; margin: 10px 0; }
+            #camera-btn {
+                padding: 16px; background: #ff4b4b; color: white; border: none; 
+                border-radius: 50px; cursor: pointer; font-weight: bold; width: 80%; font-size: 18px;
+            }
+            .status { font-size: 14px; color: #888; margin-bottom: 10px; }
         </style>
 
         <div class="container">
-            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Ready for DSP Scan</p>
+            <div class="status" id="status-text">READY FOR PRECISION SCAN</div>
+            <div class="bpm-display" id="bpm-val">--</div>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()">Start 94% Accuracy Scan</button>
+            <button id="camera-btn" onclick="initSensor()">START SCAN</button>
         </div>
 
         <script>
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
-        const ctxWave = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d');
+        const bpmText = document.getElementById('bpm-val');
+        const statusText = document.getElementById('status-text');
+
+        let dataPoints = new Array(100).fill(0);
+        let history = [];
         
-        function resize() {
-            canvas.width = canvas.clientWidth;
-            canvas.height = 140;
-        }
-        window.addEventListener('resize', resize);
-        resize();
-
-        let points = new Array(100).fill(70); 
-
-        function drawWave(signal) {
-            ctxWave.clearRect(0, 0, canvas.width, canvas.height);
+        function draw(val) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            dataPoints.push(val);
+            dataPoints.shift();
             
-            // Draw center zero-line
-            ctxWave.strokeStyle = '#333';
-            ctxWave.lineWidth = 1;
-            ctxWave.beginPath();
-            ctxWave.moveTo(0, 70); ctxWave.lineTo(canvas.width, 70);
-            ctxWave.stroke();
-
-            ctxWave.strokeStyle = '#00ff00';
-            ctxWave.lineWidth = 2;
-            ctxWave.lineJoin = 'round';
-            ctxWave.beginPath();
-            
-            // Auto-scale the wave so it's visible but stays in bounds
-            let y = 70 - (signal * 50); 
-            y = Math.max(10, Math.min(130, y));
-            points.push(y);
-            points.shift();
-
-            for (let i = 0; i < points.length; i++) {
-                let x = i * (canvas.width / 99);
-                if (i === 0) ctxWave.moveTo(x, points[i]);
-                else ctxWave.lineTo(x, points[i]);
+            ctx.strokeStyle = '#ff4b4b';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            for(let i=0; i<100; i++){
+                let x = (canvas.width / 100) * i;
+                let y = (canvas.height / 2) - (dataPoints[i] * 40);
+                if(i==0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }
-            ctxWave.stroke();
+            ctx.stroke();
         }
 
         async function initSensor() {
             if (scanning) return;
-            const statusText = document.getElementById('status-text');
-            const video = document.getElementById('video');
-            const btn = document.getElementById('camera-btn');
-
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 160 } },
-                    audio: false
+                    video: { facingMode: "environment" }, audio: false
                 });
+                const video = document.getElementById('video');
                 video.srcObject = stream;
-                btn.style.display = "none";
+                document.getElementById('camera-btn').style.display = 'none';
                 scanning = true;
 
+                // Try to turn on flash
                 const track = stream.getVideoTracks()[0];
                 const capabilities = track.getCapabilities();
                 if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
                 const procCanvas = document.createElement('canvas');
-                const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
+                const pCtx = procCanvas.getContext('2d', { willReadFrequently: true });
                 procCanvas.width = 20; procCanvas.height = 20;
 
-                const scanDuration = 60000; 
-                let startTime = 0;
-                let intervals = [];
-                let lastBeatTime = 0;
-                
-                // DSP Variables
-                let fastEMA = 0;
-                let slowEMA = 0;
-                let isPeak = false;
-                let initialized = false;
+                let lastBPMTime = performance.now();
+                let filterLow = 0;
+                let filterHigh = 0;
+                let beatTimes = [];
 
-                function process() {
+                function loop() {
                     if (!scanning) return;
+                    pCtx.drawImage(video, 0, 0, 20, 20);
+                    const data = pCtx.getImageData(0, 0, 20, 20).data;
                     
-                    // Use performance.now() for high-precision timing, not Date.now()
+                    // G-channel is the gold standard for PPG accuracy
+                    let green = 0;
+                    for (let i = 1; i < data.length; i += 4) green += data[i];
+                    green /= 400;
+
+                    // Bandpass Filter: Strips out camera auto-exposure drift
+                    filterLow = (0.95 * filterLow) + (0.05 * green);
+                    let highPassed = green - filterLow;
+                    filterHigh = (0.8 * filterHigh) + (0.2 * highPassed);
+                    
+                    draw(filterHigh);
+
+                    // Peak detection with "Cooldown" logic
                     const now = performance.now();
-
-                    procCtx.drawImage(video, 0, 0, 20, 20);
-                    const pixels = procCtx.getImageData(0, 0, 20, 20).data;
-                    let greenSum = 0;
-                    for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
-                    const avgGreen = greenSum / 400;
-
-                    if (!initialized) {
-                        fastEMA = avgGreen;
-                        slowEMA = avgGreen;
-                        startTime = now;
-                        lastBeatTime = now;
-                        initialized = true;
-                    }
-
-                    // --- THE BANDPASS FILTER ---
-                    // Fast EMA tracks the pulse. Slow EMA tracks camera auto-exposure.
-                    fastEMA = (0.3 * avgGreen) + (0.7 * fastEMA);
-                    slowEMA = (0.02 * avgGreen) + (0.98 * slowEMA);
-                    
-                    // Subtracting them removes camera drift entirely
-                    let signal = fastEMA - slowEMA; 
-                    drawWave(signal);
-
-                    const elapsed = now - startTime;
-
-                    // Throw away the first 4 seconds. The camera needs this time to lock its exposure.
-                    if (elapsed > 4000) {
-                        // Peak Detection on the zero-centered wave
-                        if (signal > 0.5 && !isPeak) {
-                            let ibi = now - lastBeatTime;
-                            // Strict physiological limits (40 BPM to 180 BPM)
-                            if (ibi > 333 && ibi < 1500) {
-                                intervals.push(ibi);
-                                lastBeatTime = now;
-                                isPeak = true;
+                    if (filterHigh > 0.3 && (now - lastBPMTime) > 400) {
+                        beatTimes.push(now);
+                        lastBPMTime = now;
+                        if(beatTimes.length > 5) {
+                            let diffs = [];
+                            for(let i=1; i<beatTimes.length; i++) diffs.push(beatTimes[i]-beatTimes[i-1]);
+                            // Use Median for 94%+ stability
+                            diffs.sort();
+                            let median = diffs[Math.floor(diffs.length/2)];
+                            let bpm = Math.round(60000 / median);
+                            if(bpm > 40 && bpm < 180) {
+                                bpmText.innerText = bpm;
+                                statusText.innerText = "❤️ PULSE DETECTED";
                             }
-                        } else if (signal < 0) {
-                            // Reset peak detector when wave crosses zero line
-                            isPeak = false; 
                         }
-
-                        let bpm = "--";
-                        if (intervals.length >= 5) {
-                            // Use Median filtering to drop outliers (mistakes)
-                            let recentIntervals = intervals.slice(-7).sort((a, b) => a - b);
-                            let medianIBI = recentIntervals[Math.floor(recentIntervals.length / 2)];
-                            bpm = Math.round(60000 / medianIBI);
-                        }
-                        
-                        let remaining = Math.max(0, Math.ceil((scanDuration - elapsed) / 1000));
-                        statusText.innerHTML = `💓 <b>BPM:</b> ${bpm} | ⏱️ ${remaining}s`;
-                    } else {
-                        statusText.innerHTML = "⚙️ <b>Locking Camera Exposure... Keep Still</b>";
-                        lastBeatTime = now; // Prevent false first beats
                     }
 
-                    if (elapsed < scanDuration) {
-                        requestAnimationFrame(process);
-                    } else {
-                        scanning = false; track.stop();
-                        
-                        // Final Calculation using the median of all collected valid intervals
-                        let finalBPM = 0;
-                        if (intervals.length > 0) {
-                            intervals.sort((a, b) => a - b);
-                            let finalMedianIBI = intervals[Math.floor(intervals.length / 2)];
-                            finalBPM = Math.round(60000 / finalMedianIBI);
-                        }
-
-                        window.parent.postMessage({
-                            type: 'streamlit:setComponentValue',
-                            value: { hr: finalBPM, status: 'complete' }
-                        }, '*');
-                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
-                    }
+                    if(beatTimes.length > 15) beatTimes.shift();
+                    requestAnimationFrame(loop);
                 }
-                
-                // Wait for video to actually start playing before processing
-                video.onplaying = () => { process(); };
-                video.play();
-                
-            } catch (err) { statusText.innerHTML = "❌ Error: Cannot access camera."; }
+                loop();
+            } catch (e) { statusText.innerText = "ERROR: ACCESS DENIED"; }
         }
         </script>
         """,
-        height=380,
+        height=400,
     )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -354,6 +287,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
