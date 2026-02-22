@@ -13,35 +13,39 @@ def hrv_sensor_component():
         """
         <style>
             .container {
-                background: #111; padding: 15px; border-radius: 15px; 
+                background: #0d0d0d; padding: 20px; border-radius: 20px; 
                 text-align: center; color: white; font-family: sans-serif;
                 width: 100%; max-width: 400px; margin: auto; box-sizing: border-box;
                 border: 1px solid #333;
             }
             #waveCanvas {
-                background: #000; border-radius: 10px; margin: 10px 0; 
-                width: 100%; height: 120px; display: block;
+                background: #000; border-radius: 12px; margin: 15px 0; 
+                width: 100%; height: 140px; display: block; border: 1px solid #222;
             }
-            .bpm-text { font-size: 48px; font-weight: 800; color: #00ff41; margin: 0; }
-            #progress-bg { width: 100%; height: 6px; background: #333; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+            .bpm-text { font-size: 56px; font-weight: 800; color: #00ff41; margin: 0; text-shadow: 0 0 20px rgba(0,255,65,0.4); }
+            #progress-bg { width: 100%; height: 8px; background: #222; border-radius: 4px; margin: 15px 0; overflow: hidden; }
             #progress-fill { width: 0%; height: 100%; background: #00ff41; transition: linear 1s; }
             #camera-btn {
-                padding: 15px; background: #00ff41; color: black; border: none; 
-                border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px;
+                padding: 18px; background: #00ff41; color: black; border: none; 
+                border-radius: 14px; cursor: pointer; font-weight: bold; width: 100%; font-size: 18px;
+                box-shadow: 0 4px 15px rgba(0,255,65,0.3);
             }
+            .status-label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1.5px; }
         </style>
 
         <div class="container">
-            <div id="status" style="font-size:12px; color: #888;">READY FOR 60s SCAN</div>
+            <div class="status-label" id="status">Ready for Scan</div>
             <div class="bpm-text" id="bpm-val">--</div>
+            <div class="status-label">Beats Per Minute</div>
             <div id="progress-bg"><div id="progress-fill"></div></div>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()">START 60s MEASUREMENT</button>
+            <button id="camera-btn" onclick="initSensor()">BEGIN 60s HRV SCAN</button>
         </div>
 
         <script>
         let scanning = false;
+        let signalAcquired = false;
         let beatTimes = [];
         let waveData = new Array(100).fill(0);
         const canvas = document.getElementById('waveCanvas');
@@ -55,6 +59,8 @@ def hrv_sensor_component():
             let scale = (canvas.height / 2.5) / maxVal;
             ctx.strokeStyle = '#00ff41';
             ctx.lineWidth = 3;
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = '#00ff41';
             ctx.beginPath();
             for(let i=0; i<100; i++){
                 let x = (canvas.width / 100) * i;
@@ -81,58 +87,98 @@ def hrv_sensor_component():
                 const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
                 pCanvas.width = 20; pCanvas.height = 20;
 
-                let startTime = performance.now();
+                let startTime = 0;
                 let lastBeat = 0;
                 let lowPass = 0;
 
                 function process() {
                     if (!scanning) return;
                     let now = performance.now();
-                    let elapsed = (now - startTime) / 1000;
 
-                    if (elapsed >= 60) {
-                        scanning = false; track.stop();
-                        // Final HRV RMSSD Calculation
-                        let rr = [];
-                        for(let i=1; i<beatTimes.length; i++) rr.push(beatTimes[i]-beatTimes[i-1]);
-                        let diffSq = rr.slice(1).map((val, i) => Math.pow(val - rr[i], 2));
-                        let rmssd = Math.sqrt(diffSq.reduce((a,b)=>a+b, 0) / diffSq.length);
-                        
-                        window.parent.postMessage({
-                            type: 'streamlit:setComponentValue',
-                            value: { hr: Math.round(60000 / (rr.reduce((a,b)=>a+b,0)/rr.length)), hrv: Math.round(rmssd) }
-                        }, '*');
-                        return;
-                    }
-
-                    document.getElementById('progress-fill').style.width = (elapsed/60*100) + "%";
                     pCtx.drawImage(video, 0, 0, 20, 20);
                     const pixels = pCtx.getImageData(0, 0, 20, 20).data;
                     let green = 0;
                     for (let i = 1; i < pixels.length; i += 4) green += pixels[i];
                     green /= 400;
 
-                    lowPass = (0.9 * lowPass) + (0.1 * green);
+                    lowPass = (0.92 * lowPass) + (0.08 * green);
                     let signal = green - lowPass;
                     draw(signal);
 
-                    if (signal > 0.15 && (now - lastBeat) > 450) {
+                    // SIGNAL CHECK: Don't start the timer until we see clear rhythmic peaks
+                    if (!signalAcquired) {
+                        document.getElementById('status').innerText = "Adjusting Signal...";
+                        if (signal > 0.2) { 
+                             signalAcquired = true;
+                             startTime = performance.now(); 
+                        }
+                    } else {
+                        let elapsed = (now - startTime) / 1000;
+                        document.getElementById('status').innerText = "Capturing: " + Math.ceil(60-elapsed) + "s";
+                        document.getElementById('progress-fill').style.width = (elapsed/60*100) + "%";
+
+                        if (elapsed >= 60) {
+                            scanning = false; track.stop();
+                            let rr = [];
+                            for(let i=1; i<beatTimes.length; i++) rr.push(beatTimes[i]-beatTimes[i-1]);
+                            
+                            // KUBIOS-STYLE RMSSD MATH
+                            let diffs = [];
+                            for(let i=1; i<rr.length; i++) diffs.push(Math.pow(rr[i] - rr[i-1], 2));
+                            let rmssd = Math.sqrt(diffs.reduce((a,b)=>a+b, 0) / diffs.length);
+                            let avgHR = Math.round(60000 / (rr.reduce((a,b)=>a+b,0) / rr.length));
+
+                            window.parent.postMessage({
+                                type: 'streamlit:setComponentValue',
+                                value: { hr: avgHR, hrv: Math.round(rmssd) }
+                            }, '*');
+                            return;
+                        }
+                    }
+
+                    // ACCURATE PEAK TRIGGER
+                    if (signal > 0.15 && (now - lastBeat) > 400) {
                         beatTimes.push(now);
                         if(beatTimes.length > 2) {
-                            let instBPM = Math.round(60000 / (now - lastBeat));
-                            document.getElementById('bpm-val').innerText = instBPM;
+                            document.getElementById('bpm-val').innerText = Math.round(60000 / (now - lastBeat));
                         }
                         lastBeat = now;
                     }
                     requestAnimationFrame(process);
                 }
                 process();
-            } catch (e) { alert("Camera Error"); }
+            } catch (e) { document.getElementById('status').innerText = "CAMERA ERROR"; }
         }
         </script>
         """,
-        height=380,
+        height=420,
     )
+
+# ... (Login logic)
+
+# --- 2. THE CORRECTED SENSOR LOGIC ---
+if st.session_state.role == "student":
+    st.header("🕒 Daily Measurement")
+    
+    # Run the component
+    sensor_data = hrv_sensor_component()
+    
+    # CRITICAL: Add the null-check here to fix the "NoneType" error
+    if sensor_data is not None:
+        st.session_state['detected_hr'] = sensor_data.get('hr', 70)
+        st.session_state['detected_hrv'] = sensor_data.get('hrv', 50)
+        st.success(f"✅ Data Locked: {st.session_state['detected_hr']} BPM / {st.session_state['detected_hrv']}ms HRV")
+
+    st.divider()
+
+    # --- DATA ENTRY FORM ---
+    with st.form("entry", clear_on_submit=True):
+        # Using .get() ensures that even if a scan hasn't run, the form doesn't crash
+        current_hr = st.session_state.get('detected_hr', 70)
+        current_hrv = st.session_state.get('detected_hrv', 50)
+        
+        hr = st.number_input("Heart Rate (BPM)", 40, 160, int(current_hr))
+        hrv = st.number_input("HRV (RMSSD ms)", 5, 250, int(current_hrv))
 
 # --- 2. INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -255,3 +301,4 @@ elif st.session_state.role == "admin":
         st.subheader("Team Readiness Leaderboard")
         st.dataframe(df.sort_values('Timestamp', ascending=False), use_container_width=True)
         st.download_button("Export CSV", df.to_csv(index=False), "readiness_export.csv")
+
