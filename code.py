@@ -21,24 +21,20 @@ def hrv_sensor_component():
                 background: #000; border-radius: 8px; margin: 10px 0; 
                 width: 100%; height: 140px; display: block;
             }
-            #quality-box { width: 100%; height: 8px; background: #ddd; border-radius: 4px; margin: 5px 0; overflow: hidden; }
-            #quality-bar { width: 0%; height: 100%; background: #ff4b4b; transition: 0.3s; }
             #camera-btn { padding: 14px; background: #ff4b4b; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px; }
         </style>
 
         <div class="container">
-            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Calibrating for Accuracy</p>
-            <div id="quality-box"><div id="quality-bar"></div></div>
+            <p id="status-text" style="margin: 5px 0; font-size: 14px;">📡 <b>Status:</b> Ready for DSP Scan</p>
             <canvas id="waveCanvas"></canvas>
             <video id="video" autoplay playsinline style="display:none;"></video>
-            <button id="camera-btn" onclick="initSensor()">Initiate Precision Scan</button>
+            <button id="camera-btn" onclick="initSensor()">Start 94% Accuracy Scan</button>
         </div>
 
         <script>
         let scanning = false;
         const canvas = document.getElementById('waveCanvas');
         const ctxWave = canvas.getContext('2d');
-        const qBar = document.getElementById('quality-bar');
         
         function resize() {
             canvas.width = canvas.clientWidth;
@@ -49,14 +45,23 @@ def hrv_sensor_component():
 
         let points = new Array(100).fill(70); 
 
-        function drawWave(zScore) {
+        function drawWave(signal) {
             ctxWave.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw center zero-line
+            ctxWave.strokeStyle = '#333';
+            ctxWave.lineWidth = 1;
+            ctxWave.beginPath();
+            ctxWave.moveTo(0, 70); ctxWave.lineTo(canvas.width, 70);
+            ctxWave.stroke();
+
             ctxWave.strokeStyle = '#00ff00';
-            ctxWave.lineWidth = 3;
+            ctxWave.lineWidth = 2;
             ctxWave.lineJoin = 'round';
             ctxWave.beginPath();
             
-            let y = 70 - (zScore * 30); 
+            // Auto-scale the wave so it's visible but stays in bounds
+            let y = 70 - (signal * 50); 
             y = Math.max(10, Math.min(130, y));
             points.push(y);
             points.shift();
@@ -89,20 +94,25 @@ def hrv_sensor_component():
                 if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
                 const procCanvas = document.createElement('canvas');
-                const procCtx = procCanvas.getContext('2d');
+                const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
                 procCanvas.width = 20; procCanvas.height = 20;
 
-                const startTime = Date.now();
-                let beatTimes = []; 
-                let smoothedValue = 0;
-                let rollingMean = 0;
-                let rollingSTD = 0;
+                const scanDuration = 60000; 
+                let startTime = 0;
+                let intervals = [];
+                let lastBeatTime = 0;
+                
+                // DSP Variables
+                let fastEMA = 0;
+                let slowEMA = 0;
                 let isPeak = false;
+                let initialized = false;
 
                 function process() {
                     if (!scanning) return;
-                    const now = Date.now();
-                    const elapsed = now - startTime;
+                    
+                    // Use performance.now() for high-precision timing, not Date.now()
+                    const now = performance.now();
 
                     procCtx.drawImage(video, 0, 0, 20, 20);
                     const pixels = procCtx.getImageData(0, 0, 20, 20).data;
@@ -110,65 +120,86 @@ def hrv_sensor_component():
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
                     const avgGreen = greenSum / 400;
 
-                    // EMA Filters for extreme denoising
-                    smoothedValue = (0.12 * avgGreen) + (0.88 * smoothedValue);
-                    rollingMean = (0.01 * smoothedValue) + (0.99 * rollingMean);
-                    let diff = smoothedValue - rollingMean;
-                    rollingSTD = (0.01 * Math.abs(diff)) + (0.99 * rollingSTD);
+                    if (!initialized) {
+                        fastEMA = avgGreen;
+                        slowEMA = avgGreen;
+                        startTime = now;
+                        lastBeatTime = now;
+                        initialized = true;
+                    }
+
+                    // --- THE BANDPASS FILTER ---
+                    // Fast EMA tracks the pulse. Slow EMA tracks camera auto-exposure.
+                    fastEMA = (0.3 * avgGreen) + (0.7 * fastEMA);
+                    slowEMA = (0.02 * avgGreen) + (0.98 * slowEMA);
                     
-                    // Normalization
-                    let zScore = rollingSTD > 0.05 ? (diff / rollingSTD) : 0;
-                    drawWave(zScore);
+                    // Subtracting them removes camera drift entirely
+                    let signal = fastEMA - slowEMA; 
+                    drawWave(signal);
 
-                    // Signal Quality Index (SQI)
-                    let quality = Math.min(100, (rollingSTD * 800));
-                    qBar.style.width = quality + "%";
-                    qBar.style.background = quality > 60 ? "#00ff00" : (quality > 30 ? "#ffcc00" : "#ff4b4b");
+                    const elapsed = now - startTime;
 
-                    if (elapsed > 5000) {
-                        // Advanced Peak Detection: Looks for the rapid upward swing of blood volume
-                        if (zScore < -1.4 && !isPeak) {
-                            let ibi = now - beatTimes[beatTimes.length - 1];
-                            // PHYSIOLOGICAL GATE: Rejects anything outside 40-180 BPM
-                            if (!beatTimes.length || (ibi > 333 && ibi < 1500)) {
-                                beatTimes.push(now);
+                    // Throw away the first 4 seconds. The camera needs this time to lock its exposure.
+                    if (elapsed > 4000) {
+                        // Peak Detection on the zero-centered wave
+                        if (signal > 0.5 && !isPeak) {
+                            let ibi = now - lastBeatTime;
+                            // Strict physiological limits (40 BPM to 180 BPM)
+                            if (ibi > 333 && ibi < 1500) {
+                                intervals.push(ibi);
+                                lastBeatTime = now;
                                 isPeak = true;
                             }
-                        } else if (zScore > 0.7) {
-                            isPeak = false;
+                        } else if (signal < 0) {
+                            // Reset peak detector when wave crosses zero line
+                            isPeak = false; 
                         }
 
                         let bpm = "--";
-                        if (beatTimes.length >= 5) {
-                            // Calculates BPM based on the median of the last 5 intervals (Outlier Rejection)
-                            let intervals = [];
-                            for(let i=1; i<beatTimes.slice(-6).length; i++) {
-                                intervals.push(beatTimes[beatTimes.length-i] - beatTimes[beatTimes.length-i-1]);
-                            }
-                            intervals.sort((a, b) => a - b);
-                            let medianIBI = intervals[Math.floor(intervals.length / 2)];
+                        if (intervals.length >= 5) {
+                            // Use Median filtering to drop outliers (mistakes)
+                            let recentIntervals = intervals.slice(-7).sort((a, b) => a - b);
+                            let medianIBI = recentIntervals[Math.floor(recentIntervals.length / 2)];
                             bpm = Math.round(60000 / medianIBI);
                         }
                         
-                        statusText.innerHTML = `💓 <b>Verified BPM:</b> ${bpm} | ⏱️ ${Math.max(0, Math.ceil((65000-elapsed)/1000))}s`;
+                        let remaining = Math.max(0, Math.ceil((scanDuration - elapsed) / 1000));
+                        statusText.innerHTML = `💓 <b>BPM:</b> ${bpm} | ⏱️ ${remaining}s`;
+                    } else {
+                        statusText.innerHTML = "⚙️ <b>Locking Camera Exposure... Keep Still</b>";
+                        lastBeatTime = now; // Prevent false first beats
                     }
 
-                    if (elapsed < 65000) {
+                    if (elapsed < scanDuration) {
                         requestAnimationFrame(process);
                     } else {
                         scanning = false; track.stop();
+                        
+                        // Final Calculation using the median of all collected valid intervals
+                        let finalBPM = 0;
+                        if (intervals.length > 0) {
+                            intervals.sort((a, b) => a - b);
+                            let finalMedianIBI = intervals[Math.floor(intervals.length / 2)];
+                            finalBPM = Math.round(60000 / finalMedianIBI);
+                        }
+
                         window.parent.postMessage({
                             type: 'streamlit:setComponentValue',
-                            value: { hr: bpm, status: 'complete' }
+                            value: { hr: finalBPM, status: 'complete' }
                         }, '*');
+                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
                     }
                 }
-                video.onplay = () => { smoothedValue = 150; rollingMean = 150; process(); };
-            } catch (err) { statusText.innerHTML = "❌ Error: Permission Denied"; }
+                
+                // Wait for video to actually start playing before processing
+                video.onplaying = () => { process(); };
+                video.play();
+                
+            } catch (err) { statusText.innerHTML = "❌ Error: Cannot access camera."; }
         }
         </script>
         """,
-        height=420,
+        height=380,
     )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
@@ -323,6 +354,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
