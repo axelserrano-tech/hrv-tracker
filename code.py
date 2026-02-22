@@ -116,17 +116,18 @@ function simpleFilter(signal) {
 
 function detectPeaks(signal, times) {
     let peaks = [];
-    if (signal.length < 5) return peaks;
+    if (signal.length < 10) return peaks;
 
-    const maxVal = Math.max(...signal);
-    const threshold = maxVal * 0.6;
+    const mean = signal.reduce((a,b)=>a+b,0) / signal.length;
+    const std = Math.sqrt(signal.map(x => (x-mean)**2).reduce((a,b)=>a+b,0) / signal.length);
+    const threshold = mean + 0.8 * std;
 
     for (let i = 1; i < signal.length - 1; i++) {
         if (signal[i] > threshold &&
             signal[i] > signal[i-1] &&
             signal[i] > signal[i+1]) {
 
-            if (!peaks.length || (times[i] - peaks[peaks.length-1]) > 0.3)
+            if (!peaks.length || (times[i] - peaks[peaks.length-1]) > 0.35)
                 peaks.push(times[i]);
         }
     }
@@ -158,15 +159,16 @@ function variabilityIndex(ibi) {
 }
 
 function signalQuality(filtered, ibi) {
-    const amplitude = Math.max(...filtered) - Math.min(...filtered);
+    if (ibi.length < 5) return "insufficient";
 
-    if (amplitude < 1.5) return "poor";
-    if (ibi.length < 3) return "unstable";
+    const meanIBI = ibi.reduce((a,b)=>a+b,0) / ibi.length;
 
-    const mean = ibi.reduce((a,b)=>a+b,0) / ibi.length;
-    const variance = ibi.reduce((a,b)=>a+(b-mean)**2,0);
+    if (meanIBI < 0.33 || meanIBI > 1.5)
+        return "invalid_hr_range";
 
-    if (variance > 0.15) return "noisy";
+    const variability = computeRMSSD(ibi);
+
+    if (variability < 5) return "low_variability_or_noise";
     return "good";
 }
 
@@ -426,5 +428,6 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
