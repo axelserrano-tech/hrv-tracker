@@ -9,176 +9,137 @@ import streamlit.components.v1 as components
 
 # This function creates the "Bridge"
 def hrv_sensor_component():
-    return components.html(
-        """
-        <style>
-            .container {
-                background: #f0f2f6; 
-                padding: 15px; 
-                border-radius: 15px; 
-                text-align: center; 
-                border: 1px solid #d1d5db; 
-                font-family: sans-serif;
-                max-width: 100%;
-                box-sizing: border-box;
-            }
-            #waveCanvas {
-                background: #000; 
-                border-radius: 8px; 
-                margin: 10px 0; 
-                width: 100%; /* This makes it fit any screen */
-                height: 120px;
-                display: block;
-            }
-            #camera-btn {
-                padding: 14px; 
-                background: #ff4b4b; 
-                color: white; 
-                border: none; 
-                border-radius: 10px; 
-                cursor: pointer; 
-                font-weight: bold; 
-                width: 100%; 
-                font-size: 16px;
-            }
-        </style>
+    return components.html(
+        """
+        <style>
+            .container {
+                background: #f0f2f6; padding: 15px; border-radius: 15px; 
+                text-align: center; border: 1px solid #d1d5db; font-family: sans-serif;
+                max-width: 100%; box-sizing: border-box;
+            }
+            #waveCanvas {
+                background: #000; border-radius: 8px; margin: 10px 0; 
+                width: 100%; height: 120px; display: block;
+            }
+            #camera-btn {
+                padding: 14px; background: #ff4b4b; color: white; border: none; 
+                border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; font-size: 16px;
+            }
+        </style>
 
-        <div class="container">
-            <p id="status-text" style="margin: 5px 0;">📊 <b>Hardware:</b> Ready</p>
-            
-            <canvas id="waveCanvas"></canvas>
-            
-            <video id="video" autoplay playsinline style="display:none;"></video>
-            
-            <button id="camera-btn" onclick="initSensor()">
-                Enable Camera & Flash
-            </button>
-        </div>
+        <div class="container">
+            <p id="status-text" style="margin: 5px 0;">📊 <b>Hardware:</b> Ready</p>
+            <canvas id="waveCanvas"></canvas>
+            <video id="video" autoplay playsinline style="display:none;"></video>
+            <button id="camera-btn" onclick="initSensor()">Enable Camera & Flash</button>
+        </div>
 
-        <script>
-        let scanning = false;
-        const canvas = document.getElementById('waveCanvas');
-        const ctxWave = canvas.getContext('2d');
-        
-        // We need to set the internal resolution to match the display size
-        canvas.width = canvas.offsetWidth;
-        canvas.height = 120;
-        
-        let points = new Array(100).fill(60); 
+        <script>
+        let scanning = false;
+        const canvas = document.getElementById('waveCanvas');
+        const ctxWave = canvas.getContext('2d');
+        canvas.width = 300; 
+        canvas.height = 120;
+        let points = new Array(100).fill(60); 
 
-        function drawWave(value) {
-            ctxWave.clearRect(0, 0, canvas.width, canvas.height);
-            ctxWave.strokeStyle = '#00ff00';
-            ctxWave.lineWidth = 3;
-            ctxWave.beginPath();
-            
-            let y = 60 - ((value - 128) * 1.5); 
-            points.push(y);
-            points.shift();
+        function drawWave(value) {
+            ctxWave.clearRect(0, 0, canvas.width, canvas.height);
+            ctxWave.strokeStyle = '#00ff00';
+            ctxWave.lineWidth = 3;
+            ctxWave.beginPath();
+            let y = 60 - ((value - 128) * 1.5); 
+            points.push(y);
+            points.shift();
+            for (let i = 0; i < points.length; i++) {
+                let x = i * (canvas.width / 100);
+                if (i === 0) ctxWave.moveTo(x, points[i]);
+                else ctxWave.lineTo(x, points[i]);
+            }
+            ctxWave.stroke();
+        }
 
-            for (let i = 0; i < points.length; i++) {
-                let x = i * (canvas.width / 100);
-                if (i === 0) ctxWave.moveTo(x, points[i]);
-                else ctxWave.lineTo(x, points[i]);
-            }
-            ctxWave.stroke();
-        }
+        async function initSensor() {
+            if (scanning) return;
+            const statusText = document.getElementById('status-text');
+            const video = document.getElementById('video');
+            const btn = document.getElementById('camera-btn');
 
-        async function initSensor() {
-            if (scanning) return;
-            const statusText = document.getElementById('status-text');
-            const video = document.getElementById('video');
-            const btn = document.getElementById('camera-btn');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", width: { ideal: 320 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                btn.style.display = "none";
+                scanning = true;
 
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 320 } },
-                    audio: false
-                });
-                video.srcObject = stream;
-                btn.style.display = "none";
-                scanning = true;
+                const track = stream.getVideoTracks()[0];
+                const capabilities = track.getCapabilities();
+                if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
 
-                const track = stream.getVideoTracks()[0];
-                const capabilities = track.getCapabilities();
-                if (capabilities.torch) await track.applyConstraints({ advanced: [{ torch: true }] });
+                const procCanvas = document.createElement('canvas');
+                const procCtx = procCanvas.getContext('2d', { alpha: false });
+                procCanvas.width = 32; procCanvas.height = 32;
 
-                const procCanvas = document.createElement('canvas');
-                const procCtx = procCanvas.getContext('2d', { alpha: false });
-                procCanvas.width = 32; procCanvas.height = 32;
+                const startTime = Date.now();
+                const duration = 60000;
+                let beatTimes = []; 
+                let lastValue = 0;
+                let isPeak = false;
 
-                const startTime = Date.now();
-                const duration = 60000;
+                function process() {
+                    if (!scanning) return;
+                    const now = Date.now();
+                    const elapsed = now - startTime;
+                    const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
 
-                let readings = [];
-                let beatTimes = []; // To store timestamps of each heartbeat
-                let lastValue = 0;
-                let isPeak = false;
-                const startTime = Date.now();
-                const duration = 60000;
+                    procCtx.drawImage(video, 0, 0, 32, 32);
+                    const pixels = procCtx.getImageData(0, 0, 32, 32).data;
+                    let greenSum = 0;
+                    for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
+                    const avgGreen = greenSum / 1024;
 
-                function process() {
-                    if (!scanning) return;
-                    const now = Date.now();
-                    const elapsed = now - startTime;
-                    const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
+                    drawWave(avgGreen);
 
-                    procCtx.drawImage(video, 0, 0, 32, 32);
-                    const pixels = procCtx.getImageData(0, 0, 32, 32).data;
-                    let greenSum = 0;
-                    for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
-                    const avgGreen = greenSum / 1024;
+                    if (lastValue > 0 && avgGreen < lastValue && !isPeak && avgGreen < 130) {
+                        beatTimes.push(now);
+                        isPeak = true;
+                    } else if (avgGreen > lastValue + 1) {
+                        isPeak = false;
+                    }
+                    lastValue = avgGreen;
 
-                    drawWave(avgGreen);
+                    if (elapsed < duration) {
+                        let currentBPM = beatTimes.length > 5 ? Math.round((beatTimes.length / (elapsed / 60000))) : "--";
+                        statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
+                        requestAnimationFrame(process);
+                    } else {
+                        scanning = false;
+                        track.stop();
+                        
+                        let rrIntervals = [];
+                        for(let i = 1; i < beatTimes.length; i++) { rrIntervals.push(beatTimes[i] - beatTimes[i-1]); }
+                        let diffs = [];
+                        for(let i = 1; i < rrIntervals.length; i++) { diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2)); }
+                        let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 50;
+                        let finalHR = Math.round((beatTimes.length / (duration / 60000)));
 
-                    // --- REAL-TIME PEAK DETECTION ---
-                    // We look for when the green intensity drops (blood volume increases)
-                    if (lastValue > 0 && avgGreen < lastValue && !isPeak && avgGreen < 130) {
-                        beatTimes.push(now);
-                        isPeak = true; // Lock until the wave goes back up
-                    } else if (avgGreen > lastValue + 1) {
-                        isPeak = false; // Reset lock
-                    }
-                    lastValue = avgGreen;
-
-                    if (elapsed < duration) {
-                        // Show real-time feedback of how many beats we've counted
-                        let currentBPM = beatTimes.length > 5 ? 
-                            Math.round((beatTimes.length / (elapsed / 60000))) : "--";
-                        
-                        statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
-                        requestAnimationFrame(process);
-                    } else {
-                        // --- FINAL CALCULATIONS ---
-                        scanning = false;
-                        track.stop();
-
-                        // Calculate RMSSD from the beatTimes array
-                        let rrIntervals = [];
-                        for(let i = 1; i < beatTimes.length; i++) {
-                            rrIntervals.push(beatTimes[i] - beatTimes[i-1]);
-                        }
-
-                        // Simple RMSSD Math: Root Mean Square of Successive Differences
-                        let diffs = [];
-                        for(let i = 1; i < rrIntervals.length; i++) {
-                            diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2));
-                        }
-                        let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 50;
-                        let finalHR = Math.round((beatTimes.length / (duration / 60000)));
-
-                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
-                        
-                        window.parent.postMessage({
-                            type: 'streamlit:setComponentValue',
-                            value: { hr: finalHR, hrv: Math.round(calculatedRMSSD), status: 'done' }
-                        }, '*');
-                    }
-                }
-        </script>
-        """,
-        height=350,
-    )
+                        statusText.innerHTML = "✅ <b>Scan Complete!</b>";
+                        window.parent.postMessage({
+                            type: 'streamlit:setComponentValue',
+                            value: { hr: finalHR, hrv: Math.round(calculatedRMSSD), status: 'done' }
+                        }, '*');
+                    }
+                }
+                video.onplay = () => process();
+            } catch (err) {
+                statusText.innerHTML = "❌ Error: " + err.message;
+            }
+        }
+        </script>
+        """,
+        height=350,
+    )
 # --- INITIAL SETUP ---
 st.set_page_config(page_title="Kubios HRV Readiness", layout="wide")
 
@@ -335,3 +296,4 @@ elif st.session_state.role == "admin":
 
 
 like this?
+
