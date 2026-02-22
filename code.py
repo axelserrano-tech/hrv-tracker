@@ -81,11 +81,16 @@ def hrv_sensor_component():
                 const procCtx = procCanvas.getContext('2d', { alpha: false });
                 procCanvas.width = 32; procCanvas.height = 32;
 
+                // --- ACCURACY SETUP ---
                 const startTime = Date.now();
                 const duration = 60000;
                 let beatTimes = []; 
                 let lastValue = 0;
                 let isPeak = false;
+                let smoothedValue = 0;
+                const alpha = 0.15; // Filter strength: 0.15 is smooth but responsive
+                let lastBeatTime = 0;
+                const minIBI = 450; // Ignore anything faster than 133 BPM (prevents noise)
 
                 function process() {
                     if (!scanning) return;
@@ -99,18 +104,25 @@ def hrv_sensor_component():
                     for (let i = 1; i < pixels.length; i += 4) { greenSum += pixels[i]; }
                     const avgGreen = greenSum / 1024;
 
-                    drawWave(avgGreen);
+                    // Apply Low-Pass Filter
+                    smoothedValue = (alpha * avgGreen) + (1 - alpha) * smoothedValue;
+                    drawWave(smoothedValue);
 
-                    if (lastValue > 0 && avgGreen < lastValue && !isPeak && avgGreen < 130) {
-                        beatTimes.push(now);
-                        isPeak = true;
-                    } else if (avgGreen > lastValue + 1) {
+                    // Peak Detection with Artifact Rejection
+                    if (smoothedValue < lastValue && !isPeak && (now - lastBeatTime > minIBI)) {
+                        // Check if the drop is meaningful (blood volume surge)
+                        if (lastValue - smoothedValue > 0.03) {
+                            beatTimes.push(now);
+                            lastBeatTime = now;
+                            isPeak = true;
+                        }
+                    } else if (smoothedValue > lastValue + 0.03) {
                         isPeak = false;
                     }
-                    lastValue = avgGreen;
+                    lastValue = smoothedValue;
 
                     if (elapsed < duration) {
-                        let currentBPM = beatTimes.length > 5 ? Math.round((beatTimes.length / (elapsed / 60000))) : "--";
+                        let currentBPM = beatTimes.length > 3 ? Math.round((beatTimes.length / (elapsed / 60000))) : "--";
                         statusText.innerHTML = `💓 <b>BPM:</b> ${currentBPM} | ⏱️ ${remaining}s`;
                         requestAnimationFrame(process);
                     } else {
@@ -119,9 +131,11 @@ def hrv_sensor_component():
                         
                         let rrIntervals = [];
                         for(let i = 1; i < beatTimes.length; i++) { rrIntervals.push(beatTimes[i] - beatTimes[i-1]); }
+                        
                         let diffs = [];
                         for(let i = 1; i < rrIntervals.length; i++) { diffs.push(Math.pow(rrIntervals[i] - rrIntervals[i-1], 2)); }
-                        let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 50;
+                        
+                        let calculatedRMSSD = Math.sqrt(diffs.reduce((a, b) => a + b, 0) / diffs.length) || 0;
                         let finalHR = Math.round((beatTimes.length / (duration / 60000)));
 
                         statusText.innerHTML = "✅ <b>Scan Complete!</b>";
@@ -293,6 +307,7 @@ elif st.session_state.role == "admin":
         leaderboard = df.sort_values('Timestamp', ascending=False)
         st.dataframe(leaderboard, use_container_width=True)
         st.download_button("Export Full Dataset (CSV)", df.to_csv(index=False), "ryan_readiness_export.csv", "text/csv")
+
 
 
 
